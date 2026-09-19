@@ -1,9 +1,10 @@
+from .loop import AgentLoop
 from .state import AgentState
 from llm.client import LLMClient#报错了
 
 class Agent:
-    def __init__(self,llm:LLMClient) -> None:
-        self.llm = llm
+    def __init__(self,loop: AgentLoop) -> None:
+        self.loop = loop
         self.state = AgentState()
 
 
@@ -14,9 +15,8 @@ class Agent:
             "content": prompt
         })
 
-        response = await self.llm.generate(
-            self.state.get_history()
+        response = await self.loop.run(
+            self.state
         )
 
-        self.state.add(response.output)
         return response.output_text
