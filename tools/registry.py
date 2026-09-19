@@ -1,15 +1,18 @@
 from typing import Any,Callable,Type
 
+from pydantic import BaseModel
+
+
 class ToolDefinition:
     def __init__(self,
                  name: str,
                  description: str,
-                 parameters: dict[str,Any],
+                 args_model: Type[BaseModel],#this stands for a BaseModel class,instead of a reality of BaseModel
                  function: Callable[...,Any]
                  ) -> None:
         self.name: str = name
         self.description: str = description
-        self.parameters: dict[str,Any] = parameters
+        self.args_model: Type[BaseModel] = args_model
         self.function: Callable[...,Any] = function
 
 #Tool注册表封装，现在可以看作一个tool的管理中心，它可以通过register方法加入新的工具，也可通过get方法获取相关工具的信息
