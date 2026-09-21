@@ -1,2 +1,3 @@
-test.py
+testFiles/test.py
 *.pyc
+testFiles/
