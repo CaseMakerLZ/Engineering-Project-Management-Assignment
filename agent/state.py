@@ -4,6 +4,9 @@ from dataclasses import dataclass,field
 from enum import Enum
 from typing import Any
 
+from agent.message import AgentMessage
+
+
 class AgentStatus(str,Enum):
     CREATED = "created"
     RUNNING = "running"
@@ -14,16 +17,16 @@ class AgentStatus(str,Enum):
 @dataclass
 class AgentState:
     #这里list[Any]的处理其实依旧很粗糙：里面可能存在多种类型str,dict,ResponseOutputMessage....,但这里先不管，之后再处理
-    history: list[Any] = field(default_factory=list)
+    history: list[AgentMessage] = field(default_factory=list)
     step: int = 0
     max_steps: int = 20
     status: AgentStatus = AgentStatus.CREATED
     last_tool_result: Any = None
 
-    def add(self,item:Any) -> None:
-        self.history.append(item)
+    def add(self,message: AgentMessage) -> None:
+        self.history.append(message)
 
-    def get_history(self) -> list:
+    def get_history(self) -> list[AgentMessage]:
         return self.history
 
     def increment_step(self) -> None:

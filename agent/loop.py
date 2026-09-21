@@ -3,7 +3,10 @@ from llm.client import LLMClient
 from typing import Any
 from tools.executor import ToolExecutor, ToolExecutionResult
 from tools.registry import ToolRegistry
+from .message import AgentMessage, MessageType
 from .state import AgentState
+from llm.mapper import messages_to_provider_input, response_output_to_messages
+
 
 class AgentLoop:
     def __init__(self,
@@ -26,17 +29,20 @@ class AgentLoop:
             print(f"第{state.step}次循环")
 
             response = await self.client.generate(
-                input=state.get_history(),
+                input=messages_to_provider_input(state.get_history()),
                 tools=self.registry.get_llm_tools(),
             )
+
+            messages = response_output_to_messages(response.output)
+
             tool_calls: list = [
-                item
-                for item in response.output
-                if item.type == "function_call"
+                message
+                for message in messages
+                if message.type == MessageType.TOOL_CALL
             ]
 
-            for item in response.output:
-                state.add(item.model_dump(mode="json"))
+            for message in messages:
+                state.add(message)
 
             if not tool_calls:
                 print("本轮循环调用工具数为0")
@@ -48,10 +54,12 @@ class AgentLoop:
                     tool_name=tool_call.name,
                     arguments=tool_call.arguments
                 )
+                #TODO: 这个last_tool_result暂时没有什么作用，到时候可能可以丢掉而选择更好的方案
+                state.last_tool_result = result
 
-                state.add(
-                    {
-                        "type": "function_call_output",
+                message = AgentMessage(
+                    type=MessageType.TOOL_RESULT,
+                    content={
                         "call_id": tool_call.call_id,
                         "output": (
                             str(result.output)
@@ -60,6 +68,20 @@ class AgentLoop:
                         )
                     }
                 )
+
+                #这里进行了一次重构
+                state.add(message)
+                # state.add(
+                #     {
+                #         "type": "function_call_output",
+                #         "call_id": tool_call.call_id,
+                #         "output": (
+                #             str(result.output)
+                #             if result.success
+                #             else f"Tool Error: {result.error}"
+                #         )
+                #     }
+                # )
 
 
 

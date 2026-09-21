@@ -1,5 +1,6 @@
 from .loop import AgentLoop
 from .state import AgentState
+from message import AgentMessage,MessageType
 
 class Agent:
     def __init__(self,loop: AgentLoop) -> None:
@@ -8,11 +9,11 @@ class Agent:
 
 
     async def run(self,prompt:str) -> str:
-        self.state.add({
-            "type": "message",
-            "role": "user",
-            "content": prompt
-        })
+        message = AgentMessage(
+            type=MessageType.USER,
+            content=prompt
+        )
+        self.state.add(message)
 
         response = await self.loop.run(
             self.state
