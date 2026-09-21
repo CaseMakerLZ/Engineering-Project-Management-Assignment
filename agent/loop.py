@@ -1,4 +1,4 @@
-from agent.state import AgentStatus
+from .state import AgentStatus
 from llm.client import LLMClient
 from typing import Any
 from tools.executor import ToolExecutor, ToolExecutionResult
@@ -50,9 +50,10 @@ class AgentLoop:
                 return response
 
             for tool_call in tool_calls:
+                tool_call_content = tool_call.content
                 result: ToolExecutionResult = self.executor.execute(
-                    tool_name=tool_call.name,
-                    arguments=tool_call.arguments
+                    tool_name=tool_call_content["name"],
+                    arguments=tool_call_content["arguments"]
                 )
                 #TODO: 这个last_tool_result暂时没有什么作用，到时候可能可以丢掉而选择更好的方案
                 state.last_tool_result = result
@@ -60,7 +61,7 @@ class AgentLoop:
                 message = AgentMessage(
                     type=MessageType.TOOL_RESULT,
                     content={
-                        "call_id": tool_call.call_id,
+                        "call_id": tool_call_content["call_id"],
                         "output": (
                             str(result.output)
                             if result.success

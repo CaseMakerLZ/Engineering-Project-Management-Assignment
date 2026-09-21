@@ -1,6 +1,6 @@
 from .loop import AgentLoop
 from .state import AgentState
-from message import AgentMessage,MessageType
+from .message import AgentMessage,MessageType
 
 class Agent:
     def __init__(self,loop: AgentLoop) -> None:

@@ -6,18 +6,19 @@ def response_output_to_messages(output: list[Any]) ->list[AgentMessage]:
     messages: list[AgentMessage] = []
 
     for item in output:
+        item_content = item.model_dump(mode="json")
         if item.type == "message":
             messages.append(
                 AgentMessage(
                     type=MessageType.ASSISTANT,
-                    content=item
+                    content=item_content
                 )
             )
         elif item.type == "function_call":
             messages.append(
                 AgentMessage(
                     type=MessageType.TOOL_CALL,
-                    content=item
+                    content=item_content
                 )
             )
         #到这截止，暂不考虑其他type情况
