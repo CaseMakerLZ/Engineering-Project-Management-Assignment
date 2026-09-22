@@ -7,6 +7,7 @@ from agent_service.api import create_app
 from agent_service.config import Settings
 from agent_service.repository import SQLiteRunRepository
 from agent_service.runtime import RuntimeResult
+from agent_service.schemas import CreateRunRequest
 from agent_service.service import RunService
 
 
@@ -70,3 +71,16 @@ def test_internal_token_is_required_when_configured(tmp_path: Path) -> None:
     assert client.get(
         "/api/internal/health", headers={"X-Service-Token": "secret"}
     ).status_code == 200
+
+
+def test_cancelled_run_is_not_overwritten_by_execution(tmp_path: Path) -> None:
+    database_path = tmp_path / "agent_service.sqlite3"
+    repository = SQLiteRunRepository(database_path)
+    service = RunService(repository, FakeRuntime())
+    run = service.create(CreateRunRequest(prompt="cancel me"))
+    run_id = run.run_id
+    service.cancel(run_id)
+    import asyncio
+
+    asyncio.run(service.execute(run_id))
+    assert repository.get_run(run_id).status.value == "CANCELLED"

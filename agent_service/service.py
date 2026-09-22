@@ -43,6 +43,10 @@ class RunService:
 
         try:
             runtime_result = await self.runtime.run(run.prompt, run.project_id)
+            latest_run = self.repository.get_run(run_id)
+            if latest_run is None or latest_run.status == RunStatus.CANCELLED:
+                return
+            run = latest_run
             self.repository.append_messages(
                 run_id,
                 [serialize_message(message) for message in runtime_result.messages],
@@ -50,9 +54,15 @@ class RunService:
             run.status = RunStatus.COMPLETED
             run.result = runtime_result.result
         except Exception as exc:
+            latest_run = self.repository.get_run(run_id)
+            if latest_run is not None and latest_run.status == RunStatus.CANCELLED:
+                return
             run.status = RunStatus.FAILED
             run.error = str(exc)
         finally:
+            latest_run = self.repository.get_run(run_id)
+            if latest_run is not None and latest_run.status == RunStatus.CANCELLED:
+                return
             run.finished_at = _now()
             self.repository.update_run(run)
 
@@ -67,4 +77,3 @@ class RunService:
         run.status = RunStatus.CANCELLED
         run.finished_at = _now()
         return self.repository.update_run(run)
-
