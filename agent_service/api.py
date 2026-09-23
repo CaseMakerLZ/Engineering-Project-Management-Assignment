@@ -17,6 +17,8 @@ from .service import RunService
 from .runtime import CurrentAgentRuntime
 
 
+# 创建 FastAPI 应用并组装仓库、运行时和业务服务。
+# 允许外部注入依赖，因此测试可以使用 FakeRuntime，而不用调用真实 LLM。
 def create_app(
     settings: Settings | None = None,
     repository: SQLiteRunRepository | None = None,
@@ -33,6 +35,7 @@ def create_app(
     )
     router = APIRouter(prefix="/api/internal")
 
+    # 当配置了内部令牌时，Java 调用方必须通过请求头完成服务间认证。
     async def verify_token(
         x_service_token: str | None = Header(default=None),
     ) -> None:
@@ -42,6 +45,7 @@ def create_app(
                 detail={"code": "INVALID_SERVICE_TOKEN", "message": "invalid service token"},
             )
 
+    # 健康检查用于 Java、容器编排或反向代理判断服务是否可用。
     @router.get("/health", response_model=HealthResponse, dependencies=[Depends(verify_token)])
     async def health() -> HealthResponse:
         return HealthResponse(status="ok", service=settings.service_name)
@@ -56,6 +60,7 @@ def create_app(
         request: CreateRunRequest,
         background_tasks: BackgroundTasks,
     ) -> CreateRunResponse:
+        # 创建接口只负责登记任务并返回 run_id，耗时 Agent 工作交给后台执行。
         run = run_service.create(request)
         background_tasks.add_task(run_service.execute, run.run_id)
         return CreateRunResponse(run_id=run.run_id, status=run.status)
@@ -66,6 +71,7 @@ def create_app(
         dependencies=[Depends(verify_token)],
     )
     async def get_run(run_id: str) -> RunResponse:
+        # 查询接口只读取持久化状态，不会触发 Agent 执行。
         run = repository.get_run(run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="run not found")
@@ -77,6 +83,7 @@ def create_app(
         dependencies=[Depends(verify_token)],
     )
     async def get_messages(run_id: str) -> RunMessagesResponse:
+        # 消息单独查询，避免任务详情响应随着上下文变长而无限膨胀。
         if repository.get_run(run_id) is None:
             raise HTTPException(status_code=404, detail="run not found")
         messages = repository.list_messages(run_id)
@@ -91,6 +98,7 @@ def create_app(
         dependencies=[Depends(verify_token)],
     )
     async def cancel_run(run_id: str) -> CancelRunResponse:
+        # 取消是状态操作；当前版本不会强制中断已经发出的外部 LLM 请求。
         run = run_service.cancel(run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="run not found")
@@ -103,5 +111,5 @@ def create_app(
     return app
 
 
+# Uvicorn 默认导入的应用对象；测试可改用 create_app 注入隔离依赖。
 app = create_app()
-

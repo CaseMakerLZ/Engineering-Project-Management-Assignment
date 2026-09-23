@@ -31,17 +31,20 @@ class RunService:
             created_at=_now(),
         )
         return self.repository.create_run(run)
-
+    #异步执行 Agent 任务，是整个服务最重要的函数。
     async def execute(self, run_id: str) -> None:
+        # 1. 根据 run_id 找到任务RunRecord对象
         run = self.repository.get_run(run_id)
+        # 2. 如果任务不存在，或者已经不是 CREATED，就不执行
         if run is None or run.status != RunStatus.CREATED:
             return
-
+        # 3. 标记任务开始运行
         run.status = RunStatus.RUNNING
         run.started_at = _now()
         self.repository.update_run(run)
 
         try:
+            # 4. 真正调用 Agent Core
             runtime_result = await self.runtime.run(run.prompt, run.project_id)
             latest_run = self.repository.get_run(run_id)
             if latest_run is None or latest_run.status == RunStatus.CANCELLED:
