@@ -1,0 +1,22 @@
+spring:
+  application:
+    # Java 对外提供业务 API 时使用的应用名称。
+    name: java-backend
+
+server:
+  # Java 后端对外监听的端口；Python Agent Service 默认监听 8000。
+  port: ${SERVER_PORT:8080}
+
+agent-service:
+  # Java → Python Agent Service 的内部 HTTP 地址。
+  base-url: ${AGENT_SERVICE_BASE_URL:http://127.0.0.1:8000}
+  # 如果 Python 端配置了 AGENT_SERVICE_INTERNAL_TOKEN，Java 端也要配置同一个值。
+  internal-token: ${AGENT_SERVICE_INTERNAL_TOKEN:}
+  # 连接超时和读取超时单位均为 milliseconds。
+  connect-timeout-ms: ${AGENT_SERVICE_CONNECT_TIMEOUT_MS:3000}
+  read-timeout-ms: ${AGENT_SERVICE_READ_TIMEOUT_MS:30000}
+
+logging:
+  level:
+    # 开发阶段便于观察 Java 调用 Python 的请求日志；生产环境再按需调整。
+    com.Agent.javabackend: INFO
