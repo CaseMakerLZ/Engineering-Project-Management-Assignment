@@ -4,6 +4,11 @@ testFiles/
 examples/
 data/
 
+# Local environment variables and secrets
+.env
+.env.*
+!.env.example
+
 HELP.md
 target/
 .mvn/wrapper/maven-wrapper.jar
