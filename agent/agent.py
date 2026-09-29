@@ -18,5 +18,5 @@ class Agent:
         response = await self.loop.run(
             self.state
         )
-
+        #只返回response.output_text是否合理？output里面工具调用在loop里面被执行了
         return response.output_text

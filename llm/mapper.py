@@ -1,7 +1,7 @@
 from typing import Any
 
 from agent.message import AgentMessage,MessageType
-
+#所谓mapper就是映射
 def response_output_to_messages(output: list[Any]) ->list[AgentMessage]:
     messages: list[AgentMessage] = []
 

@@ -28,6 +28,7 @@ class ToolExecutor:
         self.registry = registry
 
     #这里就先捕获粒度最大的Exception之后再完善
+    # 注意：本方法是同步函数。在 async 环境（AgentLoop）中必须通过
     def execute(self,tool_name: str,arguments: str) -> ToolExecutionResult:
         try:
             tool = self.registry.get(tool_name)
