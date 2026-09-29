@@ -3,13 +3,15 @@ package com.Agent.javabackend.Controller;
 import com.Agent.javabackend.Service.AgentService;
 import com.Agent.javabackend.dto.*;
 import jakarta.validation.Valid;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 
 /**
  * TODO:当前的这些接口貌似有个共同的问题————它们都不是异步的，但是貌似对于前端用户的体验来讲，就是要这种效果？我还不明确
  */
 @RestController
-@RequestMapping("/api/agent")
+@RequestMapping(value = "/api/agent", produces = MediaType.APPLICATION_JSON_VALUE)
 public class AgentServiceController {
     private final AgentService agentService;
 
@@ -31,7 +33,8 @@ public class AgentServiceController {
     }
 
     //创建任务
-    @PostMapping("/runs")
+    @PostMapping(value = "/runs", consumes = MediaType.APPLICATION_JSON_VALUE)
+    @ResponseStatus(HttpStatus.ACCEPTED)
     public Result<CreateRunResponse> createRun(@Valid @RequestBody CreateRunRequest request){
         CreateRunResponse createRunResponse = agentService.createRun(request);
         return Result.success(createRunResponse);
