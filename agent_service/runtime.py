@@ -4,7 +4,7 @@ from typing import Any, Protocol
 
 from agent.agent import Agent
 from agent.loop import AgentLoop
-from agent.message import AgentMessage
+from agent.message import AgentMessage, MessageType
 from llm.client import LLMClient
 from tools.executor import ToolExecutor
 from tools.registry import ToolRegistry
@@ -22,7 +22,7 @@ class AgentRuntime(Protocol):
     继承Protocol，本类是一个协议类
     函数只声明签名，不提供实现，“...”作为占位符
     '''
-    async def run(self, prompt: str, project_id: str | None = None) -> RuntimeResult:
+    async def run(self, prompt: str, project_id: str | None = None, context: list[dict[str, str]] | None = None) -> RuntimeResult:
         ...
 
 
@@ -30,15 +30,19 @@ class CurrentAgentRuntime:
     """Adapter around the current handwritten Agent Core."""
     # 这是当前第一版实现；未来可以新增 LangGraphRuntime，而不修改 RunService。
     #这个run是AgentRuntime.run的,组装Agent并加入提示词进行Agent运行
-    async def run(self, prompt: str, project_id: str | None = None) -> RuntimeResult:
+    async def run(self, prompt: str, project_id: str | None = None, context: list[dict[str, str]] | None = None) -> RuntimeResult:
         del project_id
         llm = LLMClient()
         registry = ToolRegistry()
         executor = ToolExecutor(registry)
         loop = AgentLoop(llm, registry, executor)
         agent = Agent(loop)
+        for message in context or []:
+            message_type = MessageType.USER if message["role"] == "user" else MessageType.ASSISTANT
+            agent.state.add(AgentMessage(type=message_type, content=message["content"]))
         result = await agent.run(prompt)
-        return RuntimeResult(result=result, messages=agent.state.get_history())
+        # 旧轮次的上下文只用于推理，不重复写入本轮的运行消息。
+        return RuntimeResult(result=result, messages=agent.state.get_history()[len(context or []):])
 
 #把内部 Agent 消息转换成可持久化的二元组，eg:("assistant", {...})
 def serialize_message(message: AgentMessage) -> tuple[str, Any]:

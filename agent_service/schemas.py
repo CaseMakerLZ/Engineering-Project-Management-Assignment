@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -15,7 +15,14 @@ class HealthResponse(BaseModel):
 # Java 创建 Agent 任务时提交的 JSON 请求体。
 class CreateRunRequest(BaseModel):
     project_id: str | None = Field(default=None, max_length=128)
+    conversation_id: str | None = Field(default=None, max_length=128)
     prompt: str = Field(min_length=1, max_length=20_000)
+    context: list["ConversationContextMessage"] = Field(default_factory=list, max_length=20)
+
+
+class ConversationContextMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=20_000)
 
 
 # 创建任务后立即返回的异步任务凭据。
@@ -34,6 +41,7 @@ class RunResponse(BaseModel):
 
     run_id: str
     project_id: str | None
+    conversation_id: str | None
     prompt: str
     status: RunStatus
     result: str | None

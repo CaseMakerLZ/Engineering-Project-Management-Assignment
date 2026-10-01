@@ -18,7 +18,9 @@ class RunStatus(str, Enum):
 class RunRecord:
     run_id: str
     project_id: str | None
+    conversation_id: str | None
     prompt: str
+    context: list[dict[str, str]]
     status: RunStatus
     result: str | None
     error: str | None

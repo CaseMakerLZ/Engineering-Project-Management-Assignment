@@ -47,7 +47,9 @@ class SQLiteRunRepository:
                 CREATE TABLE IF NOT EXISTS runs (
                     run_id TEXT PRIMARY KEY,
                     project_id TEXT,
+                    conversation_id TEXT,
                     prompt TEXT NOT NULL,
+                    context_json TEXT NOT NULL DEFAULT '[]',
                     status TEXT NOT NULL,
                     result TEXT,
                     error TEXT,
@@ -69,6 +71,11 @@ class SQLiteRunRepository:
                     ON messages(run_id, sequence);
                 """
             )
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(runs)")}
+            if "conversation_id" not in columns:
+                connection.execute("ALTER TABLE runs ADD COLUMN conversation_id TEXT")
+            if "context_json" not in columns:
+                connection.execute("ALTER TABLE runs ADD COLUMN context_json TEXT NOT NULL DEFAULT '[]'")
 
     #向 runs 表插入一条新的任务记录。
     def create_run(self, run: RunRecord) -> RunRecord:
@@ -76,14 +83,16 @@ class SQLiteRunRepository:
             connection.execute(
                 """
                 INSERT INTO runs
-                (run_id, project_id, prompt, status, result, error,
+                (run_id, project_id, conversation_id, prompt, context_json, status, result, error,
                  created_at, started_at, finished_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run.run_id,
                     run.project_id,
+                    run.conversation_id,
                     run.prompt,
+                    json.dumps(run.context, ensure_ascii=False),
                     run.status.value,
                     run.result,
                     run.error,
@@ -105,7 +114,9 @@ class SQLiteRunRepository:
         return RunRecord(
             run_id=row["run_id"],
             project_id=row["project_id"],
+            conversation_id=row["conversation_id"],
             prompt=row["prompt"],
+            context=json.loads(row["context_json"]),
             status=RunStatus(row["status"]),
             result=row["result"],
             error=row["error"],

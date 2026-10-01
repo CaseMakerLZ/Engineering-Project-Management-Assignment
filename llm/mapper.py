@@ -37,7 +37,10 @@ def messages_to_provider_input(messages: list[AgentMessage]) -> list[Any]:
                 }
             )
         elif message.type == MessageType.ASSISTANT:
-            result.append(message.content)
+            if isinstance(message.content, str):
+                result.append({"role": "assistant", "content": message.content})
+            else:
+                result.append(message.content)
         elif message.type == MessageType.TOOL_CALL:
             result.append(message.content)
         elif message.type == MessageType.TOOL_RESULT:

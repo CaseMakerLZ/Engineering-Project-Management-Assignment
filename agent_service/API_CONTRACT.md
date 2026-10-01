@@ -29,7 +29,12 @@ X-Service-Token: <optional-token>
 ```json
 {
   "project_id": "project-001",
-  "prompt": "分析当前项目的代码结构"
+  "conversation_id": "conversation-001",
+  "prompt": "继续分析当前项目的代码结构",
+  "context": [
+    {"role": "user", "content": "这个项目有哪些模块？"},
+    {"role": "assistant", "content": "目前主要有 Java 后端和 Python Agent 服务。"}
+  ]
 }
 ```
 
@@ -43,6 +48,7 @@ X-Service-Token: <optional-token>
 ```
 
 Java 应保存 `run_id`，随后轮询状态。
+`conversation_id` 和 `context` 是可选字段。Java 负责按对话顺序提供最近最多 20 条历史消息；Python 将其加入本次 AgentState，并只保存当前 Run 新产生的运行消息。
 
 ## 查询任务
 
@@ -56,6 +62,7 @@ GET /api/internal/runs/{run_id}
 {
   "run_id": "uuid",
   "project_id": "project-001",
+  "conversation_id": "conversation-001",
   "prompt": "分析当前项目的代码结构",
   "status": "RUNNING",
   "result": null,

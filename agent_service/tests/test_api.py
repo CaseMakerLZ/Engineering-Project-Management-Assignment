@@ -12,9 +12,9 @@ from agent_service.service import RunService
 
 
 class FakeRuntime:
-    async def run(self, prompt: str, project_id: str | None = None) -> RuntimeResult:
+    async def run(self, prompt: str, project_id: str | None = None, context: list[dict[str, str]] | None = None) -> RuntimeResult:
         return RuntimeResult(
-            result=f"completed: {prompt}",
+            result=f"completed: {prompt}" if not context else f"completed: {prompt}; previous: {context[-1]['content']}",
             messages=[
                 AgentMessage(
                     type=MessageType.ASSISTANT,
@@ -57,6 +57,20 @@ def test_missing_run_returns_404(tmp_path: Path) -> None:
     client = create_test_client(tmp_path)
     response = client.get("/api/internal/runs/missing")
     assert response.status_code == 404
+
+
+def test_run_receives_conversation_context(tmp_path: Path) -> None:
+    client = create_test_client(tmp_path)
+    created = client.post(
+        "/api/internal/runs",
+        json={"project_id": "p1", "conversation_id": "c1", "prompt": "follow up",
+              "context": [{"role": "user", "content": "first question"},
+                          {"role": "assistant", "content": "first answer"}]},
+    )
+    assert created.status_code == 202
+    run = client.get(f"/api/internal/runs/{created.json()['run_id']}").json()
+    assert run["conversation_id"] == "c1"
+    assert run["result"] == "completed: follow up; previous: first answer"
 
 
 def test_internal_token_is_required_when_configured(tmp_path: Path) -> None:

@@ -24,7 +24,9 @@ class RunService:
         run = RunRecord(
             run_id=str(uuid4()),
             project_id=request.project_id,
+            conversation_id=request.conversation_id,
             prompt=request.prompt,
+            context=[message.model_dump() for message in request.context],
             status=RunStatus.CREATED,
             result=None,
             error=None,
@@ -45,7 +47,7 @@ class RunService:
 
         try:
             # 4. 真正调用 Agent Core
-            runtime_result = await self.runtime.run(run.prompt, run.project_id)
+            runtime_result = await self.runtime.run(run.prompt, run.project_id, run.context)
             latest_run = self.repository.get_run(run_id)
             if latest_run is None or latest_run.status == RunStatus.CANCELLED:
                 return

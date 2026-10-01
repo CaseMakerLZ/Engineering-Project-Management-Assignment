@@ -18,6 +18,10 @@ public enum ErrorCode {
     //Agent任务域（30000-39999）
     AGENT_RUN_NOT_FOUND(30001,"Agent Run 不存在",HttpStatus.NOT_FOUND),
     AGENT_RUN_STATE_CONFLICT(30002,"Agent Run 当前状态不允许执行此操作",HttpStatus.CONFLICT),
+    PROJECT_NOT_FOUND(30003,"项目不存在",HttpStatus.NOT_FOUND),
+    CONVERSATION_NOT_FOUND(30004,"对话不存在",HttpStatus.NOT_FOUND),
+    CONVERSATION_STATE_CONFLICT(30005,"对话当前有正在执行的任务",HttpStatus.CONFLICT),
+    AGENT_TASK_NOT_FOUND(30006,"对话任务不存在",HttpStatus.NOT_FOUND),
 
     //Python Agent Service 通信域(40000-49999)
     AGENT_SERVICE_UNAVAILABLE(40001,"Agent服务暂不可用",HttpStatus.SERVICE_UNAVAILABLE),
