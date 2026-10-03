@@ -1,11 +1,8 @@
 package com.Agent.javabackend.Client;
 
-import com.Agent.javabackend.dto.CancelRunResponse;
 import com.Agent.javabackend.dto.CreateRunRequest;
-import com.Agent.javabackend.dto.CreateRunResponse;
-import com.Agent.javabackend.dto.HealthResponse;
-import com.Agent.javabackend.dto.RunMessagesResponse;
 import com.Agent.javabackend.dto.RunResponse;
+import com.Agent.javabackend.dto.RunStatusResponse;
 import com.Agent.javabackend.exception.BaseException;
 import com.Agent.javabackend.exception.ErrorCode;
 import org.springframework.http.MediaType;
@@ -33,13 +30,6 @@ public class PythonAgentClient {
         this.restClient = restClient;
     }
 
-    public HealthResponse health() {
-        return execute(() -> restClient.get()
-                .uri("/api/internal/health")
-                .retrieve()
-                .body(HealthResponse.class));
-    }
-
     public RunResponse getRun(String runId) {
         return execute(() -> restClient.get()
                 .uri("/api/internal/runs/{runId}", runId)
@@ -47,27 +37,13 @@ public class PythonAgentClient {
                 .body(RunResponse.class));
     }
 
-    public CreateRunResponse createRun(CreateRunRequest request) {
+    public RunStatusResponse createRun(CreateRunRequest request) {
         return execute(() -> restClient.post()
                 .uri("/api/internal/runs")
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(request)
                 .retrieve()
-                .body(CreateRunResponse.class));
-    }
-
-    public RunMessagesResponse getMessages(String runId) {
-        return execute(() -> restClient.get()
-                .uri("/api/internal/runs/{runId}/messages", runId)
-                .retrieve()
-                .body(RunMessagesResponse.class));
-    }
-
-    public CancelRunResponse cancelRun(String runId) {
-        return execute(() -> restClient.post()
-                .uri("/api/internal/runs/{runId}/cancel", runId)
-                .retrieve()
-                .body(CancelRunResponse.class));
+                .body(RunStatusResponse.class));
     }
 
     private <T> T execute(Supplier<T> request) {

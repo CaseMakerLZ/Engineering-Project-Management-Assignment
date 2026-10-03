@@ -3,8 +3,12 @@ package com.Agent.javabackend.Service;
 import com.Agent.javabackend.Client.PythonAgentClient;
 import com.Agent.javabackend.Service.impl.ConversationServiceImpl;
 import com.Agent.javabackend.Service.impl.ProjectServiceImpl;
+import com.Agent.javabackend.Service.ContextService;
+import com.Agent.javabackend.Mapper.ProjectMapper;
+import com.Agent.javabackend.Mapper.ConversationMapper;
+import com.Agent.javabackend.Mapper.AgentTaskMapper;
 import com.Agent.javabackend.dto.CreateRunRequest;
-import com.Agent.javabackend.dto.CreateRunResponse;
+import com.Agent.javabackend.dto.RunStatusResponse;
 import com.Agent.javabackend.dto.RunResponse;
 import com.Agent.javabackend.dto.RunStatus;
 import com.Agent.javabackend.dto.ConversationDTO.CreateConversationRequest;
@@ -14,6 +18,10 @@ import com.Agent.javabackend.exception.BaseException;
 import com.Agent.javabackend.exception.ErrorCode;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
@@ -22,17 +30,43 @@ class ConversationServiceImplTest {
     @Test
     void secondTurnReceivesFirstAnswerAndRejectsParallelTurn() {
         PythonAgentClient client = mock(PythonAgentClient.class);
-        ProjectServiceImpl projects = new ProjectServiceImpl();
-        ConversationServiceImpl conversations = new ConversationServiceImpl(projects, client);
+        ProjectMapper projectRepository = mock(ProjectMapper.class);
+        ConversationMapper conversationRepository = mock(ConversationMapper.class);
+        AgentTaskMapper taskRepository = mock(AgentTaskMapper.class);
+        ContextService contextService = mock(ContextService.class);
+        when(contextService.assembleContext(any())).thenAnswer(invocation -> {
+            List<com.Agent.javabackend.entity.MessageContainer.AgentTask> previous = invocation.getArgument(0);
+            if (previous.isEmpty()) {
+                return List.of();
+            }
+            return List.of(
+                    new com.Agent.javabackend.dto.ConversationDTO.ContextMessage("user", "first question"),
+                    new com.Agent.javabackend.dto.ConversationDTO.ContextMessage("assistant", "first answer")
+            );
+        });
+        ProjectServiceImpl projects = new ProjectServiceImpl(projectRepository);
+        ConversationServiceImpl conversations = new ConversationServiceImpl(projects, client,
+                conversationRepository, taskRepository, contextService);
         CreateProjectRequest projectRequest = new CreateProjectRequest();
         projectRequest.setName("Study project");
         String projectId = projects.create(projectRequest).getProjectId();
+        var projectCaptor = org.mockito.ArgumentCaptor.forClass(com.Agent.javabackend.entity.MessageContainer.Project.class);
+        verify(projectRepository).insert(projectCaptor.capture());
+        when(projectRepository.findById(projectId)).thenReturn(Optional.of(projectCaptor.getValue()));
+        var conversationCaptor = org.mockito.ArgumentCaptor.forClass(com.Agent.javabackend.entity.MessageContainer.Conversation.class);
         String conversationId = conversations.create(projectId, new CreateConversationRequest("Design"))
                 .getConversationId();
+        verify(conversationRepository).insert(conversationCaptor.capture());
+        when(conversationRepository.findById(conversationId)).thenReturn(Optional.of(conversationCaptor.getValue()));
+
+        List<com.Agent.javabackend.entity.MessageContainer.AgentTask> savedTasks = new ArrayList<>();
+        doAnswer(invocation -> { savedTasks.add(invocation.getArgument(0)); return null; })
+                .when(taskRepository).insert(any());
+        when(taskRepository.findByConversationId(conversationId)).thenAnswer(invocation -> List.copyOf(savedTasks));
 
         when(client.createRun(any(CreateRunRequest.class)))
-                .thenReturn(new CreateRunResponse("run-1", RunStatus.CREATED))
-                .thenReturn(new CreateRunResponse("run-2", RunStatus.CREATED));
+                .thenReturn(new RunStatusResponse("run-1", RunStatus.CREATED))
+                .thenReturn(new RunStatusResponse("run-2", RunStatus.CREATED));
         CreateTurnRequest first = new CreateTurnRequest();
         first.setPrompt("first question");
         conversations.createTurn(conversationId, first);

@@ -40,10 +40,10 @@ class PythonAgentClientTest {
     @Test
     void mapsPythonUnauthorizedToInternalServiceAuthFailure() {
         TestFixture fixture = fixture();
-        fixture.server.expect(once(), requestTo("http://python/api/internal/health"))
+        fixture.server.expect(once(), requestTo("http://python/api/internal/runs/run-1"))
                 .andRespond(withStatus(HttpStatus.UNAUTHORIZED));
 
-        BaseException exception = assertThrows(BaseException.class, fixture.client::health);
+        BaseException exception = assertThrows(BaseException.class, () -> fixture.client.getRun("run-1"));
 
         assertEquals(ErrorCode.AGENT_SERVICE_AUTH_FAILED, exception.getErrorCode());
         fixture.server.verify();
@@ -67,10 +67,10 @@ class PythonAgentClientTest {
     @Test
     void mapsUnexpectedPythonErrorToBadGatewayBusinessError() {
         TestFixture fixture = fixture();
-        fixture.server.expect(once(), requestTo("http://python/api/internal/health"))
+        fixture.server.expect(once(), requestTo("http://python/api/internal/runs/run-1"))
                 .andRespond(withStatus(HttpStatus.INTERNAL_SERVER_ERROR));
 
-        BaseException exception = assertThrows(BaseException.class, fixture.client::health);
+        BaseException exception = assertThrows(BaseException.class, () -> fixture.client.getRun("run-1"));
 
         assertEquals(ErrorCode.AGENT_SERVICE_RESPONSE_ERROR, exception.getErrorCode());
         fixture.server.verify();
@@ -84,7 +84,7 @@ class PythonAgentClientTest {
                 .build();
         PythonAgentClient client = new PythonAgentClient(restClient);
 
-        BaseException exception = assertThrows(BaseException.class, client::health);
+        BaseException exception = assertThrows(BaseException.class, () -> client.getRun("run-1"));
 
         assertEquals(ErrorCode.AGENT_SERVICE_TIMEOUT, exception.getErrorCode());
     }

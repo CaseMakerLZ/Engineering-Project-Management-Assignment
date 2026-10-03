@@ -1,6 +1,6 @@
-#这个文件是整个 agent_service 与现有 Agent Core 之间的适配器。
+# 这个文件把正式 HTTP 服务连接到现有的 Agent Core。
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Protocol
 
 from agent.agent import Agent
 from agent.loop import AgentLoop
@@ -12,25 +12,22 @@ from tools.registry import ToolRegistry
 
 @dataclass(slots=True)
 class RuntimeResult:
-    # Runtime 同时返回最终答案和运行过程中产生的消息，供任务表与消息表分别保存。
+    # Agent 执行结束后返回最终回答和本次运行的过程消息。
     result: str
     messages: list[AgentMessage]
 
 
 class AgentRuntime(Protocol):
-    '''
-    继承Protocol，本类是一个协议类
-    函数只声明签名，不提供实现，“...”作为占位符
-    '''
+    """所有 Agent 运行方式都需要提供的统一调用方法。"""
     async def run(self, prompt: str, project_id: str | None = None, context: list[dict[str, str]] | None = None) -> RuntimeResult:
         ...
 
 
 class CurrentAgentRuntime:
-    """Adapter around the current handwritten Agent Core."""
-    # 这是当前第一版实现；未来可以新增 LangGraphRuntime，而不修改 RunService。
-    #这个run是AgentRuntime.run的,组装Agent并加入提示词进行Agent运行
+    """使用当前手写 Agent Core 执行任务。"""
+    # 以后替换 Agent 实现时，只需要增加新的 Runtime，不用修改任务服务。
     async def run(self, prompt: str, project_id: str | None = None, context: list[dict[str, str]] | None = None) -> RuntimeResult:
+        # 当前 Agent Core 还不使用 project_id，因此这里只保留接口字段。
         del project_id
         llm = LLMClient()
         registry = ToolRegistry()
@@ -41,10 +38,5 @@ class CurrentAgentRuntime:
             message_type = MessageType.USER if message["role"] == "user" else MessageType.ASSISTANT
             agent.state.add(AgentMessage(type=message_type, content=message["content"]))
         result = await agent.run(prompt)
-        # 旧轮次的上下文只用于推理，不重复写入本轮的运行消息。
+        # 历史消息只帮助本轮回答，不重复保存为本轮新消息。
         return RuntimeResult(result=result, messages=agent.state.get_history()[len(context or []):])
-
-#把内部 Agent 消息转换成可持久化的二元组，eg:("assistant", {...})
-def serialize_message(message: AgentMessage) -> tuple[str, Any]:
-    # 持久化边界只接受消息类型和值，不把 AgentMessage 对象直接写入数据库。
-    return message.type.value, message.content

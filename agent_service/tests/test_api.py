@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -5,10 +6,46 @@ from fastapi.testclient import TestClient
 from agent.message import AgentMessage, MessageType
 from agent_service.api import create_app
 from agent_service.config import Settings
-from agent_service.repository import SQLiteRunRepository
+from agent_service.domain import Run, RunMessage
 from agent_service.runtime import RuntimeResult
 from agent_service.schemas import CreateRunRequest
 from agent_service.service import RunService
+
+
+class MemoryRunRepository:
+    def __init__(self):
+        self.runs = {}
+        self.messages = {}
+
+    def initialize(self):
+        pass
+
+    def create_run(self, run):
+        self.runs[run.run_id] = run
+        return run
+
+    def get_run(self, run_id):
+        return self.runs.get(run_id)
+
+    def update_run(self, run):
+        self.runs[run.run_id] = run
+        return run
+
+    def append_messages(self, run_id, messages):
+        current = len(self.messages.setdefault(run_id, []))
+        now = datetime.now(timezone.utc)
+        self.messages[run_id].extend(
+            RunMessage(
+                sequence=current + index,
+                message_type=message_type,
+                content=content,
+                created_at=now,
+            )
+            for index, (message_type, content) in enumerate(messages, start=1)
+        )
+
+    def list_messages(self, run_id):
+        return self.messages.get(run_id, [])
 
 
 class FakeRuntime:
@@ -25,10 +62,9 @@ class FakeRuntime:
 
 
 def create_test_client(tmp_path: Path) -> TestClient:
-    database_path = tmp_path / "agent_service.sqlite3"
-    repository = SQLiteRunRepository(database_path)
+    repository = MemoryRunRepository()
     service = RunService(repository, FakeRuntime())
-    app = create_app(Settings(database_path=database_path), repository, service)
+    app = create_app(Settings(), repository, service)
     return TestClient(app)
 
 
@@ -74,10 +110,9 @@ def test_run_receives_conversation_context(tmp_path: Path) -> None:
 
 
 def test_internal_token_is_required_when_configured(tmp_path: Path) -> None:
-    database_path = tmp_path / "agent_service.sqlite3"
-    repository = SQLiteRunRepository(database_path)
+    repository = MemoryRunRepository()
     service = RunService(repository, FakeRuntime())
-    settings = Settings(database_path=database_path, internal_token="secret")
+    settings = Settings(internal_token="secret")
     app = create_app(settings, repository, service)
     client = TestClient(app)
 
@@ -88,8 +123,7 @@ def test_internal_token_is_required_when_configured(tmp_path: Path) -> None:
 
 
 def test_cancelled_run_is_not_overwritten_by_execution(tmp_path: Path) -> None:
-    database_path = tmp_path / "agent_service.sqlite3"
-    repository = SQLiteRunRepository(database_path)
+    repository = MemoryRunRepository()
     service = RunService(repository, FakeRuntime())
     run = service.create(CreateRunRequest(prompt="cancel me"))
     run_id = run.run_id

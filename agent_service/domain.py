@@ -1,10 +1,10 @@
-from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Any
 
+from pydantic import BaseModel, Field
 
-# Agent 任务生命周期。API、数据库和 Java 后端都使用这些稳定值沟通状态。
+# 一次 Agent 运行从创建到结束会经历的状态。Java 和 Python 使用相同的文字。
 class RunStatus(str, Enum):
     CREATED = "CREATED"
     RUNNING = "RUNNING"
@@ -13,14 +13,13 @@ class RunStatus(str, Enum):
     CANCELLED = "CANCELLED"
 
 
-# 一次 Agent 任务在服务层的内部表示，不直接等同于 HTTP 响应模型。
-@dataclass(slots=True)
-class RunRecord:
+# 一次 Agent 运行的全部任务信息。它也直接用于查询接口的返回结果。
+class Run(BaseModel):
     run_id: str
     project_id: str | None
     conversation_id: str | None
     prompt: str
-    context: list[dict[str, str]]
+    context: list[dict[str, str]] = Field(default_factory=list)
     status: RunStatus
     result: str | None
     error: str | None
@@ -29,9 +28,8 @@ class RunRecord:
     finished_at: datetime | None = None
 
 
-# 一条已经持久化的 Agent 消息，sequence 用来保证同一任务内的顺序。
-@dataclass(slots=True)
-class MessageRecord:
+# 一次运行中的一条过程消息，例如模型回答、工具调用或工具结果。
+class RunMessage(BaseModel):
     sequence: int
     message_type: str
     content: dict[str, Any] | str | None

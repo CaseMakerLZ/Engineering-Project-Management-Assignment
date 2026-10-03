@@ -1,27 +1,29 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from .domain import RunRecord, RunStatus
-from .repository import SQLiteRunRepository
-from .runtime import AgentRuntime, serialize_message
+from .domain import Run, RunStatus
+from .repository import RunRepository
+from .runtime import AgentRuntime
 from .schemas import CreateRunRequest
 
 
 def _now() -> datetime:
+    """返回当前的 UTC 时间。"""
     return datetime.now(timezone.utc)
 
 
 class RunService:
+    """创建、执行、查询和取消 Agent 运行。"""
     def __init__(
         self,
-        repository: SQLiteRunRepository,
+        repository: RunRepository,
         runtime: AgentRuntime,
     ) -> None:
         self.repository = repository
         self.runtime = runtime
 
-    def create(self, request: CreateRunRequest) -> RunRecord:
-        run = RunRecord(
+    def create(self, request: CreateRunRequest) -> Run:
+        run = Run(
             run_id=str(uuid4()),
             project_id=request.project_id,
             conversation_id=request.conversation_id,
@@ -33,20 +35,20 @@ class RunService:
             created_at=_now(),
         )
         return self.repository.create_run(run)
-    #异步执行 Agent 任务，是整个服务最重要的函数。
+    # 后台执行一项已经创建的 Agent 任务。
     async def execute(self, run_id: str) -> None:
-        # 1. 根据 run_id 找到任务RunRecord对象
+        # 找到要执行的任务。
         run = self.repository.get_run(run_id)
-        # 2. 如果任务不存在，或者已经不是 CREATED，就不执行
+        # 任务不存在或已经开始执行时，不重复执行。
         if run is None or run.status != RunStatus.CREATED:
             return
-        # 3. 标记任务开始运行
+        # 记录任务开始执行。
         run.status = RunStatus.RUNNING
         run.started_at = _now()
         self.repository.update_run(run)
 
         try:
-            # 4. 真正调用 Agent Core
+            # 调用 Agent Core 得到回答和过程消息。
             runtime_result = await self.runtime.run(run.prompt, run.project_id, run.context)
             latest_run = self.repository.get_run(run_id)
             if latest_run is None or latest_run.status == RunStatus.CANCELLED:
@@ -54,7 +56,7 @@ class RunService:
             run = latest_run
             self.repository.append_messages(
                 run_id,
-                [serialize_message(message) for message in runtime_result.messages],
+                [(message.type.value, message.content) for message in runtime_result.messages],
             )
             run.status = RunStatus.COMPLETED
             run.result = runtime_result.result
@@ -71,7 +73,7 @@ class RunService:
             run.finished_at = _now()
             self.repository.update_run(run)
 
-    def cancel(self, run_id: str) -> RunRecord | None:
+    def cancel(self, run_id: str) -> Run | None:
         run = self.repository.get_run(run_id)
         if run is None or run.status in {
             RunStatus.COMPLETED,

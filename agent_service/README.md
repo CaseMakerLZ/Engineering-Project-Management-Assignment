@@ -11,7 +11,7 @@ Java Spring Boot
 agent_service.api
         ▼
 agent_service.service.RunService
-        ├── SQLiteRunRepository
+        ├── MySQLRunRepository
         └── AgentRuntime
                 ▼
           当前 agent/ 核心
@@ -51,7 +51,16 @@ CREATED → RUNNING → COMPLETED
 
 环境变量：
 
-- `AGENT_SERVICE_DB_PATH`：SQLite 文件路径，默认 `data/agent_service.sqlite3`
 - `AGENT_SERVICE_INTERNAL_TOKEN`：可选。设置后 Java 必须在 `X-Service-Token` 请求头中携带相同值
 
-当前默认 runtime 会调用现有 LLM 配置。接口层测试可以注入 fake runtime，不需要真实 API Key。
+当前默认 runtime 会调用现有 LLM 配置。接口层测试可以注入 fake runtime 和内存 Repository，不需要真实 API Key 或 MySQL。
+
+MySQL 配置环境变量：
+
+- `AGENT_SERVICE_MYSQL_HOST`：默认 `127.0.0.1`
+- `AGENT_SERVICE_MYSQL_PORT`：默认 `3306`
+- `AGENT_SERVICE_MYSQL_USER`：默认 `root`
+- `AGENT_SERVICE_MYSQL_PASSWORD`：默认 `123456`
+- `AGENT_SERVICE_MYSQL_DATABASE`：默认 `agent_javabackend`
+
+生产数据只使用 MySQL 的 `agent_run` 和 `agent_run_message` 两张表；测试通过内存 Repository 注入，不连接数据库。

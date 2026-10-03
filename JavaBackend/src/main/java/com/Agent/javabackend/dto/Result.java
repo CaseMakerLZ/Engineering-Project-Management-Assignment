@@ -2,13 +2,17 @@ package com.Agent.javabackend.dto;
 
 import lombok.Data;
 
+/** Java 对外接口统一使用的返回格式。 */
 @Data
 public class Result<T> {
-    private Integer code; //编码：0成功，其他为失败
-    private String msg; //错误信息
-    private T data; //数据
+    /** 业务结果码，0 表示成功，其他值表示具体错误。 */
+    private Integer code;
+    /** 对结果的文字说明。 */
+    private String msg;
+    /** 成功时返回的数据，失败时通常为空。 */
+    private T data;
 
-    //如果操作不需要给前端页面返回数据那么data就可以不赋值
+    /** 返回一个没有数据的成功结果。 */
     public static Result<Void> success() {
         Result<Void> result = new Result<>();
         result.code = 0;
@@ -16,7 +20,7 @@ public class Result<T> {
         return result;
     }
 
-    //和上面的注释意思类似，但是需要返回数据
+    /** 返回一个带数据的成功结果。 */
     public static <T> Result<T> success(T data) {
         Result<T> result = new Result<T>();
         result.data = data;

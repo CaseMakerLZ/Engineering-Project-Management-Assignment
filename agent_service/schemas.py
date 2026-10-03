@@ -1,18 +1,17 @@
-from datetime import datetime
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
-from .domain import RunStatus
+from .domain import RunMessage, RunStatus
 
 
-# 健康检查接口返回的数据结构。
+# Python 服务检查自身状态后返回的数据。
 class HealthResponse(BaseModel):
     status: str
     service: str
 
 
-# Java 创建 Agent 任务时提交的 JSON 请求体。
+# Java 请求 Python 执行 Agent 时发送的数据。
 class CreateRunRequest(BaseModel):
     project_id: str | None = Field(default=None, max_length=128)
     conversation_id: str | None = Field(default=None, max_length=128)
@@ -21,57 +20,19 @@ class CreateRunRequest(BaseModel):
 
 
 class ConversationContextMessage(BaseModel):
+    # 历史消息来自用户还是 Agent。
     role: Literal["user", "assistant"]
+    # 历史消息的文字内容。
     content: str = Field(min_length=1, max_length=20_000)
 
 
-# 创建任务后立即返回的异步任务凭据。
-class CreateRunResponse(BaseModel):
+# 创建或取消运行后，只返回运行 ID 和当前状态。
+class RunStatusResponse(BaseModel):
     run_id: str
     status: RunStatus
-
-'''
-Run:        这次任务执行得怎么样？
-Message:    这次任务具体经历了什么？
-Memory:	    未来任务应该记住什么？
-'''
-
-class RunResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    run_id: str
-    project_id: str | None
-    conversation_id: str | None
-    prompt: str
-    status: RunStatus
-    result: str | None
-    error: str | None
-    created_at: datetime
-    started_at: datetime | None
-    finished_at: datetime | None
-
-
-# 对外暴露的一条消息；content 保留为 JSON 兼容结构，避免暴露 SDK 对象。
-class MessageResponse(BaseModel):
-    sequence: int
-    message_type: str
-    content: dict[str, Any] | str | None
-    created_at: datetime
-
-
-# 查询任务消息时的顶层响应结构。
+# 查询一次运行的过程消息时返回的数据。
 class RunMessagesResponse(BaseModel):
     run_id: str
-    messages: list[MessageResponse]
+    messages: list[RunMessage]
 
 
-# 预留给统一错误响应的结构，后续异常体系接入时使用。
-class ErrorResponse(BaseModel):
-    code: str
-    message: str
-
-
-# 取消任务接口的响应结构。
-class CancelRunResponse(BaseModel):
-    run_id: str
-    status: RunStatus

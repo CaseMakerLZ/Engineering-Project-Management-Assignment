@@ -1,31 +1,27 @@
 from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, Header, HTTPException, status
 
 from .config import Settings
-from .domain import RunStatus
-from .repository import SQLiteRunRepository
+from .domain import Run, RunMessage
+from .repository import MySQLRunRepository, RunRepository
 from .schemas import (
-    CancelRunResponse,
     CreateRunRequest,
-    CreateRunResponse,
-    ErrorResponse,
     HealthResponse,
-    MessageResponse,
     RunMessagesResponse,
-    RunResponse,
+    RunStatusResponse,
 )
 from .service import RunService
 from .runtime import CurrentAgentRuntime
 
 
-# 创建 FastAPI 应用并组装仓库、运行时和业务服务。
-# 允许外部注入依赖，因此测试可以使用 FakeRuntime，而不用调用真实 LLM。
+# 创建 Python HTTP 服务，并把数据库、任务服务和 Agent 运行方式连接起来。
+# 测试时可以传入假的数据库和假的 Runtime，因此不需要真的调用模型。
 def create_app(
     settings: Settings | None = None,
-    repository: SQLiteRunRepository | None = None,
+    repository: RunRepository | None = None,
     run_service: RunService | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_environment()
-    repository = repository or SQLiteRunRepository(settings.database_path)
+    repository = repository or MySQLRunRepository(settings)
     run_service = run_service or RunService(repository, CurrentAgentRuntime())
 
     app = FastAPI(
@@ -35,7 +31,7 @@ def create_app(
     )
     router = APIRouter(prefix="/api/internal")
 
-    # 当配置了内部令牌时，Java 调用方必须通过请求头完成服务间认证。
+    # 如果设置了令牌，Java 每次请求都必须带上相同的令牌。
     async def verify_token(
         x_service_token: str | None = Header(default=None),
     ) -> None:
@@ -45,37 +41,38 @@ def create_app(
                 detail={"code": "INVALID_SERVICE_TOKEN", "message": "invalid service token"},
             )
 
-    # 健康检查用于 Java、容器编排或反向代理判断服务是否可用。
+    # Java 可以用这个接口检查 Python 服务是否正常。
     @router.get("/health", response_model=HealthResponse, dependencies=[Depends(verify_token)])
     async def health() -> HealthResponse:
         return HealthResponse(status="ok", service=settings.service_name)
 
     @router.post(
         "/runs",
-        response_model=CreateRunResponse,
+        response_model=RunStatusResponse,
         status_code=status.HTTP_202_ACCEPTED,
         dependencies=[Depends(verify_token)],
     )
     async def create_run(
         request: CreateRunRequest,
         background_tasks: BackgroundTasks,
-    ) -> CreateRunResponse:
-        # 创建接口只负责登记任务并返回 run_id，耗时 Agent 工作交给后台执行。
+    ) -> RunStatusResponse:
+        # 先保存任务并立即返回 ID，耗时的 Agent 工作放到后台执行。
         run = run_service.create(request)
         background_tasks.add_task(run_service.execute, run.run_id)
-        return CreateRunResponse(run_id=run.run_id, status=run.status)
+        return RunStatusResponse(run_id=run.run_id, status=run.status)
 
     @router.get(
         "/runs/{run_id}",
-        response_model=RunResponse,
+        response_model=Run,
+        response_model_exclude={"context"},
         dependencies=[Depends(verify_token)],
     )
-    async def get_run(run_id: str) -> RunResponse:
-        # 查询接口只读取持久化状态，不会触发 Agent 执行。
+    async def get_run(run_id: str) -> Run:
+        # 这里只读取任务状态，不会重新执行 Agent。
         run = repository.get_run(run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="run not found")
-        return RunResponse.model_validate(run, from_attributes=True)
+        return run
 
     @router.get(
         "/runs/{run_id}/messages",
@@ -83,26 +80,26 @@ def create_app(
         dependencies=[Depends(verify_token)],
     )
     async def get_messages(run_id: str) -> RunMessagesResponse:
-        # 消息单独查询，避免任务详情响应随着上下文变长而无限膨胀。
+        # 过程消息单独查询，任务详情只返回任务状态和最终结果。
         if repository.get_run(run_id) is None:
             raise HTTPException(status_code=404, detail="run not found")
         messages = repository.list_messages(run_id)
         return RunMessagesResponse(
             run_id=run_id,
-            messages=[MessageResponse.model_validate(message, from_attributes=True) for message in messages],
+            messages=[RunMessage.model_validate(message) for message in messages],
         )
 
     @router.post(
         "/runs/{run_id}/cancel",
-        response_model=CancelRunResponse,
+        response_model=RunStatusResponse,
         dependencies=[Depends(verify_token)],
     )
-    async def cancel_run(run_id: str) -> CancelRunResponse:
-        # 取消是状态操作；当前版本不会强制中断已经发出的外部 LLM 请求。
+    async def cancel_run(run_id: str) -> RunStatusResponse:
+        # 当前取消会改变任务状态，但不会强行中断已经发出的模型请求。
         run = run_service.cancel(run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="run not found")
-        return CancelRunResponse(run_id=run.run_id, status=run.status)
+        return RunStatusResponse(run_id=run.run_id, status=run.status)
 
     app.include_router(router)
     app.state.settings = settings

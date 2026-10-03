@@ -1,208 +1,212 @@
+"""把 Agent 运行数据保存到 MySQL。"""
+
 import json
-import sqlite3
 from datetime import datetime, timezone
-from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import Any, Protocol
 
-from .domain import MessageRecord, RunRecord, RunStatus
-
-#返回当前 UTC 时间
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
-
-#把 datetime 转成 ISO 格式字符串，用于写入 SQLite。
-def _encode_datetime(value: datetime | None) -> str | None:
-    return value.isoformat() if value is not None else None
-
-#把 SQLite 中的 ISO 字符串恢复为 datetime 对象
-def _decode_datetime(value: str | None) -> datetime | None:
-    return datetime.fromisoformat(value) if value else None
+from .config import Settings
+from .domain import Run, RunMessage, RunStatus
 
 
-class SQLiteRunRepository:
-    """Durable local repository. It can later be replaced by a PostgreSQL adapter."""
+def _decode_json(value: Any) -> Any:
+    if value is None or isinstance(value, (dict, list, int, float, bool)):
+        return value
+    return json.loads(value)
 
-    def __init__(self, database_path: Path) -> None:
-        # SQLite 作为第一版持久化实现，接口保持独立，便于未来替换 PostgreSQL。
-        self.database_path = database_path
-        self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = Lock()
-        self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
-        # 每次操作独立连接，避免把 SQLite Connection 泄漏到业务层。
-        connection = sqlite3.connect(
-            self.database_path,
-            check_same_thread=False,
-        )
-        connection.row_factory = sqlite3.Row
-        return connection
+def _db_datetime(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
 
-    #创建runs表与messages表
-    def _initialize(self) -> None:
-        with self._lock, self._connect() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS runs (
-                    run_id TEXT PRIMARY KEY,
-                    project_id TEXT,
-                    conversation_id TEXT,
-                    prompt TEXT NOT NULL,
-                    context_json TEXT NOT NULL DEFAULT '[]',
-                    status TEXT NOT NULL,
-                    result TEXT,
-                    error TEXT,
-                    created_at TEXT NOT NULL,
-                    started_at TEXT,
-                    finished_at TEXT
-                );
-                CREATE TABLE IF NOT EXISTS messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    run_id TEXT NOT NULL,
-                    sequence INTEGER NOT NULL,
-                    message_type TEXT NOT NULL,
-                    content_json TEXT,
-                    created_at TEXT NOT NULL,
-                    UNIQUE(run_id, sequence),
-                    FOREIGN KEY(run_id) REFERENCES runs(run_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_messages_run_id
-                    ON messages(run_id, sequence);
-                """
-            )
-            columns = {row["name"] for row in connection.execute("PRAGMA table_info(runs)")}
-            if "conversation_id" not in columns:
-                connection.execute("ALTER TABLE runs ADD COLUMN conversation_id TEXT")
-            if "context_json" not in columns:
-                connection.execute("ALTER TABLE runs ADD COLUMN context_json TEXT NOT NULL DEFAULT '[]'")
 
-    #向 runs 表插入一条新的任务记录。
-    def create_run(self, run: RunRecord) -> RunRecord:
-        with self._lock, self._connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO runs
-                (run_id, project_id, conversation_id, prompt, context_json, status, result, error,
-                 created_at, started_at, finished_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    run.run_id,
-                    run.project_id,
-                    run.conversation_id,
-                    run.prompt,
-                    json.dumps(run.context, ensure_ascii=False),
-                    run.status.value,
-                    run.result,
-                    run.error,
-                    _encode_datetime(run.created_at),
-                    _encode_datetime(run.started_at),
-                    _encode_datetime(run.finished_at),
-                ),
-            )
-        return run
+def _utc_datetime(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
 
-    #根据 run_id 查询任务。如果找到了，就把 SQLite 行转换成 RunRecord；否则返回 None。
-    def get_run(self, run_id: str) -> RunRecord | None:
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT * FROM runs WHERE run_id = ?", (run_id,)
-            ).fetchone()
-        if row is None:
-            return None
-        return RunRecord(
-            run_id=row["run_id"],
-            project_id=row["project_id"],
-            conversation_id=row["conversation_id"],
-            prompt=row["prompt"],
-            context=json.loads(row["context_json"]),
-            status=RunStatus(row["status"]),
-            result=row["result"],
-            error=row["error"],
-            created_at=_decode_datetime(row["created_at"]),
-            started_at=_decode_datetime(row["started_at"]),
-            finished_at=_decode_datetime(row["finished_at"]),
+
+class RunRepository(Protocol):
+    """RunService 需要的数据保存功能。"""
+    def initialize(self) -> None: ...
+    def create_run(self, run: Run) -> Run: ...
+    def get_run(self, run_id: str) -> Run | None: ...
+    def update_run(self, run: Run) -> Run: ...
+    def append_messages(self, run_id: str, messages: list[tuple[str, Any]]) -> None: ...
+    def list_messages(self, run_id: str) -> list[RunMessage]: ...
+
+
+class MySQLRunRepository:
+    """Python 服务使用的 MySQL 数据保存实现。"""
+
+    _schema = (
+        """
+        CREATE TABLE IF NOT EXISTS agent_run (
+            run_id VARCHAR(36) PRIMARY KEY,
+            project_id VARCHAR(128), conversation_id VARCHAR(128),
+            prompt TEXT NOT NULL, context_json JSON NOT NULL,
+            status VARCHAR(16) NOT NULL, result MEDIUMTEXT, error TEXT,
+            created_at DATETIME(6) NOT NULL, started_at DATETIME(6),
+            finished_at DATETIME(6)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS agent_run_message (
+            id BIGINT PRIMARY KEY AUTO_INCREMENT,
+            run_id VARCHAR(36) NOT NULL, sequence_no INT NOT NULL,
+            message_type VARCHAR(32) NOT NULL, content_json JSON,
+            created_at DATETIME(6) NOT NULL,
+            UNIQUE KEY uk_agent_run_message_sequence (run_id, sequence_no),
+            CONSTRAINT fk_agent_run_message_run FOREIGN KEY (run_id)
+                REFERENCES agent_run(run_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """,
+    )
+
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self._initialize_lock = Lock()
+        self._initialized = False
+
+    def _connect(self):
+        try:
+            import mysql.connector
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "MySQL repository requires mysql-connector-python; install requirements.txt"
+            ) from exc
+        return mysql.connector.connect(
+            host=self.settings.mysql_host, port=self.settings.mysql_port,
+            user=self.settings.mysql_user, password=self.settings.mysql_password,
+            database=self.settings.mysql_database,
         )
 
-    def update_run(self, run: RunRecord) -> RunRecord:
-        # 状态、结果和时间戳统一更新，保证一次状态变化的数据完整性。
-        with self._lock, self._connect() as connection:
-            connection.execute(
-                """
-                UPDATE runs SET status = ?, result = ?, error = ?,
-                    started_at = ?, finished_at = ?
-                WHERE run_id = ?
-                """,
-                (
-                    run.status.value,
-                    run.result,
-                    run.error,
-                    _encode_datetime(run.started_at),
-                    _encode_datetime(run.finished_at),
-                    run.run_id,
-                ),
-            )
-        return run
+    def initialize(self) -> None:
+        if self._initialized:
+            return
+        with self._initialize_lock:
+            if self._initialized:
+                return
+            connection = self._connect()
+            try:
+                cursor = connection.cursor()
+                for statement in self._schema:
+                    cursor.execute(statement)
+                connection.commit()
+                self._initialized = True
+            finally:
+                connection.close()
 
-    def append_messages(
-        self,
-        run_id: str,
-        messages: list[tuple[str, dict[str, Any] | str | None]],
-    ) -> None:
-        '''
-            把一批消息追加到指定任务下。
-            关键点：
-            先查询当前任务已有消息的最大 sequence；
-            从最大值后面继续编号；
-            把每条消息的 content 转成 JSON；
-            批量插入数据库。
-            这样即使分多次保存消息，也能保证同一个 run_id 下序号连续递增。
-        '''
+    def create_run(self, run: Run) -> Run:
+        self.initialize()
+        connection = self._connect()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                INSERT INTO agent_run
+                (run_id, project_id, conversation_id, prompt, context_json, status,
+                 result, error, created_at, started_at, finished_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (run.run_id, run.project_id, run.conversation_id, run.prompt,
+                 json.dumps(run.context, ensure_ascii=False), run.status.value,
+                 run.result, run.error, _db_datetime(run.created_at),
+                 _db_datetime(run.started_at), _db_datetime(run.finished_at)),
+            )
+            connection.commit()
+            return run
+        finally:
+            connection.close()
+
+    def get_run(self, run_id: str) -> Run | None:
+        self.initialize()
+        connection = self._connect()
+        try:
+            cursor = connection.cursor(dictionary=True)
+            cursor.execute("SELECT * FROM agent_run WHERE run_id = %s", (run_id,))
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            return Run(
+                run_id=row["run_id"], project_id=row["project_id"],
+                conversation_id=row["conversation_id"], prompt=row["prompt"],
+                context=_decode_json(row["context_json"]),
+                status=RunStatus(row["status"]), result=row["result"],
+                error=row["error"], created_at=_utc_datetime(row["created_at"]),
+                started_at=_utc_datetime(row["started_at"]),
+                finished_at=_utc_datetime(row["finished_at"]),
+            )
+        finally:
+            connection.close()
+
+    def update_run(self, run: Run) -> Run:
+        self.initialize()
+        connection = self._connect()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                UPDATE agent_run SET status = %s, result = %s, error = %s,
+                    started_at = %s, finished_at = %s WHERE run_id = %s
+                """,
+                (run.status.value, run.result, run.error,
+                 _db_datetime(run.started_at), _db_datetime(run.finished_at),
+                 run.run_id),
+            )
+            connection.commit()
+            return run
+        finally:
+            connection.close()
+
+    def append_messages(self, run_id: str, messages: list[tuple[str, Any]]) -> None:
         if not messages:
             return
-        with self._lock, self._connect() as connection:
-            current = connection.execute(
-                "SELECT COALESCE(MAX(sequence), 0) FROM messages WHERE run_id = ?",
-                (run_id,),
-            ).fetchone()[0]
-            rows = []
-            for offset, (message_type, content) in enumerate(messages, start=1):
-                rows.append(
-                    (
-                        run_id,
-                        current + offset,
-                        message_type,
-                        json.dumps(content, ensure_ascii=False),
-                        _encode_datetime(_now()),
-                    )
+        self.initialize()
+        connection = self._connect()
+        try:
+            connection.start_transaction()
+            cursor = connection.cursor()
+            cursor.execute(
+                "SELECT COALESCE(MAX(sequence_no), 0) FROM agent_run_message "
+                "WHERE run_id = %s FOR UPDATE", (run_id,)
+            )
+            sequence = cursor.fetchone()[0]
+            now = _db_datetime(datetime.now(timezone.utc))
+            cursor.executemany(
+                """
+                INSERT INTO agent_run_message
+                (run_id, sequence_no, message_type, content_json, created_at)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                [(run_id, sequence + offset, message_type,
+                  json.dumps(content, ensure_ascii=False), now)
+                 for offset, (message_type, content) in enumerate(messages, start=1)],
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    def list_messages(self, run_id: str) -> list[RunMessage]:
+        self.initialize()
+        connection = self._connect()
+        try:
+            cursor = connection.cursor(dictionary=True)
+            cursor.execute(
+                """
+                SELECT sequence_no, message_type, content_json, created_at
+                FROM agent_run_message WHERE run_id = %s ORDER BY sequence_no
+                """, (run_id,),
+            )
+            return [
+                RunMessage(
+                    sequence=row["sequence_no"], message_type=row["message_type"],
+                    content=_decode_json(row["content_json"])
+                    if row["content_json"] is not None else None,
+                    created_at=_utc_datetime(row["created_at"]),
                 )
-            connection.executemany(
-                """
-                INSERT INTO messages
-                (run_id, sequence, message_type, content_json, created_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                rows,
-            )
-    #按 sequence 从小到大查询某个任务的所有消息，并转换成 MessageRecord 列表。
-    def list_messages(self, run_id: str) -> list[MessageRecord]:
-        with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT sequence, message_type, content_json, created_at
-                FROM messages WHERE run_id = ? ORDER BY sequence
-                """,
-                (run_id,),
-            ).fetchall()
-        return [
-            MessageRecord(
-                sequence=row["sequence"],
-                message_type=row["message_type"],
-                content=json.loads(row["content_json"])
-                if row["content_json"] is not None
-                else None,
-                created_at=_decode_datetime(row["created_at"]),
-            )
-            for row in rows
-        ]
+                for row in cursor.fetchall()
+            ]
+        finally:
+            connection.close()
