@@ -5,7 +5,11 @@ import com.Agent.javabackend.entity.MessageContainer.AgentTask;
 
 import java.util.List;
 
-/** 此Service用与上下文的管理，V1.0版本，后续应该要迭代*/
+/**
+ * 负责从历史任务中挑选本轮 Agent 需要看到的对话内容。
+ *
+ * 当前版本只处理最近的完整问答轮次；以后可以在这里加入摘要和长度预算。
+ */
 public interface ContextService {
-    public List<ContextMessage> assembleContext(List<AgentTask> previous);
+    List<ContextMessage> assembleContext(List<AgentTask> previous);
 }

@@ -1,0 +1,31 @@
+tools/
+├── registry.py
+├── executor.py
+├── result.py
+├── bootstrap.py
+│
+├── filesystem/
+│   ├── __init__.py
+│   ├── schemas.py
+│   ├── definitions.py
+│   └── service.py
+│
+├── web/
+│   ├── __init__.py
+│   ├── schemas.py
+│   ├── definitions.py
+│   └── service.py
+│
+├── terminal/
+│   ├── __init__.py
+│   ├── schemas.py
+│   ├── definitions.py
+│   └── service.py
+│
+└── search/
+    ├── __init__.py
+    ├── schemas.py
+    ├── definitions.py
+    └── service.py
+
+目前的 ToolExecutionResult 在 executor.py 中，也可以暂时不移动。等工具系统稳定后，再考虑是否单独拆出 result.py。

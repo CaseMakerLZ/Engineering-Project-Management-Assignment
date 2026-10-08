@@ -1,0 +1,113 @@
+[33mcommit f0675b0df35c12183d47ed367e4ef2adc576aa5c[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mtemp[m[33m)[m
+Author: CaseMakerLZ <241310615@mail.dhu.edu.cn>
+Date:   Thu Oct 8 23:18:09 2026 +0800
+
+    工具系统（文件相关工具：list_directory和ReadFile初步实现）、上下文系统v1.0
+
+[33mcommit 54e928a54d2f51ba30c0cbc0e289bd933d7e79be[m
+Author: CaseMakerLZ <241310615@mail.dhu.edu.cn>
+Date:   Sat Oct 3 19:36:24 2026 +0800
+
+    关于对话/项目的构建以及DTO的清理
+
+[33mcommit a389ec25699d6f9102b34597fb4bb81a5cbe5004[m
+Author: CaseMakerLZ <241310615@mail.dhu.edu.cn>
+Date:   Thu Oct 1 21:56:53 2026 +0800
+
+    实现项目对话与多轮任务最小链路
+
+[33mcommit 9f971029ed93120f35faf50641071394fa78c2e8[m[33m ([m[1;31morigin/master[m[33m, [m[1;32mmaster[m[33m, [m[1;32mcodex/agent-service-mvp[m[33m)[m
+Author: CaseMakerLZ <241310615@mail.dhu.edu.cn>
+Date:   Tue Sep 29 23:58:44 2026 +0800
+
+    清理敏感配置并补充协作环境模板
+
+[33mcommit 32746bb176dcf57628f70cea840a1a68ec3efee5[m
+Author: CaseMakerLZ <241310615@mail.dhu.edu.cn>
+Date:   Tue Sep 29 23:38:50 2026 +0800
+
+    完善Agent服务异常测试与阶段文档
+
+[33mcommit 6318da2712b0e837aaacb899e807294b126108e7[m
+Author: CaseMakerLZ <241310615@mail.dhu.edu.cn>
+Date:   Tue Sep 29 23:29:56 2026 +0800
+
+    明确Agent接口JSON响应与202状态
+
+[33mcommit 95d455d919e4d1cc09bffd21130051730b81f547[m
+Author: CaseMakerLZ <241310615@mail.dhu.edu.cn>
+Date:   Sat Sep 26 16:26:37 2026 +0800
+
+    抽离Python Agent服务通信客户端
+
+[33mcommit c93ea7f73cc40bca5edbc39da6910191683dd105[m
+Author: CaseMakerLZ <241310615@mail.dhu.edu.cn>
+Date:   Sat Sep 26 16:17:51 2026 +0800
+
+    将Agent控制器调用下沉到服务层
+
+[33mcommit 4549386517c4e2b2877f1461eac3e568a084ca1c[m
+Author: CaseMakerLZ <241310615@mail.dhu.edu.cn>
+Date:   Sat Sep 26 11:47:06 2026 +0800
+
+    修复Spring Boot本地启动配置
+
+[33mcommit c7eaf94272a76e7c3e55b88c4be1ca7c3e65f50f[m
+Author: CaseMakerLZ <241310615@mail.dhu.edu.cn>
+Date:   Sat Sep 26 00:04:22 2026 +0800
+
+    新增Spring Boot Agent服务代理接口
+
+[33mcommit a738ac9b0d46d05c75b7d7f0bbf15f637550a590[m
+Author: CaseMakerLZ <241310615@mail.dhu.edu.cn>
+Date:   Wed Sep 23 22:51:09 2026 +0800
+
+    补充Agent服务注释与架构分析报告
+
+[33mcommit b0402af50e22aad3a9a0c25295e95f2ea0580861[m
+Author: CaseMakerLZ <241310615@mail.dhu.edu.cn>
+Date:   Tue Sep 22 21:27:37 2026 +0800
+
+    保护Agent任务取消状态
+
+[33mcommit f24834fb6993b2ade55e3f6dc2a54058aaebdd05[m
+Author: CaseMakerLZ <241310615@mail.dhu.edu.cn>
+Date:   Tue Sep 22 21:24:31 2026 +0800
+
+    构建可供Spring Boot调用的Agent服务
+
+[33mcommit e2a0a7870d30d2ef110a915abce95c6ed6a0429e[m
+Author: CaseMakerLZ <241310615@mail.dhu.edu.cn>
+Date:   Mon Sep 21 22:38:40 2026 +0800
+
+    修复AgentMessage消息映射与工具调用
+
+[33mcommit ebe41d93508afd9d1e2a909473fd6c7c36d7859b[m
+Author: CaseMakerLZ <241310615@mail.dhu.edu.cn>
+Date:   Mon Sep 21 22:31:30 2026 +0800
+
+    大更新：初步完善Message的类型确定
+
+[33mcommit baa4ee674fa040bc7e9b89426468b3e78ddfcf06[m
+Author: CaseMakerLZ <241310615@mail.dhu.edu.cn>
+Date:   Mon Sep 21 13:48:26 2026 +0800
+
+    改进agent:ToolExcutionResult类添加，AgentState初步工程化
+
+[33mcommit 7eab917bece034ead9701811a602ee1385ad188c[m
+Author: CaseMakerLZ <241310615@mail.dhu.edu.cn>
+Date:   Sat Sep 19 23:51:11 2026 +0800
+
+    agent loop实现与Agent类的优化
+
+[33mcommit bf59bfebef9b7079655f85e528fbf88bee852bd8[m
+Author: CaseMakerLZ <241310615@mail.dhu.edu.cn>
+Date:   Sat Sep 19 16:36:11 2026 +0800
+
+    ToolDefinition类优化，加入BaseModel判断，初步解决Tool实际运行时的参数验证问题
+
+[33mcommit 503eb7d297ce2484231924f04f1f6597f9a540c0[m
+Author: CaseMakerLZ <241310615@mail.dhu.edu.cn>
+Date:   Sat Sep 19 15:55:03 2026 +0800
+
+    初始结构

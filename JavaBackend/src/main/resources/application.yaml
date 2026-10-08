@@ -33,6 +33,12 @@ agent-service:
   connect-timeout-ms: ${AGENT_SERVICE_CONNECT_TIMEOUT_MS:3000}
   read-timeout-ms: ${AGENT_SERVICE_READ_TIMEOUT_MS:30000}
 
+agent:
+  context:
+    # 每次发送给 Python 的历史问答轮次数量；每轮会变成 user 和 assistant 两条消息。
+    # Python 当前最多接收 20 条 context 消息，因此默认值 10 与它保持一致。
+    max-turns: ${AGENT_CONTEXT_MAX_TURNS:10}
+
 logging:
   level:
     # 开发阶段便于观察 Java 调用 Python 的请求日志；生产环境再按需调整。

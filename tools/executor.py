@@ -2,6 +2,7 @@ import json
 from dataclasses import dataclass
 
 from typing import Any
+from pydantic import BaseModel
 from tools.registry import ToolRegistry
 
 @dataclass
@@ -39,6 +40,9 @@ class ToolExecutor:
             validated_args = tool.args_model.model_validate(raw_args)
             #将得到的对象先通过model.dump化为字典格式，再用**解包成参数列表
             result = tool.function(**validated_args.model_dump())
+            #具体工具可以返回自己的 Output 模型；执行外壳统一保存 JSON 兼容数据。
+            if isinstance(result, BaseModel):
+                result = result.model_dump(mode="json")
             return ToolExecutionResult(
                 success=True,
                 output=result

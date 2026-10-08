@@ -3,6 +3,8 @@ testFiles/test.py
 testFiles/
 examples/
 data/
+test*
+docs/
 
 # Local environment variables and secrets
 .env
