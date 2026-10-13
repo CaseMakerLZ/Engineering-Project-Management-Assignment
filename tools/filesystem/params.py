@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from typing import Annotated, Literal
+
 from pydantic import BaseModel, Field, field_validator
 
 #工具工作需要具体的工作目录，所以先留下一个workspace字段，理论上项目要可以跨平台适配（即Linux(线上部署环境)和Windows(用户不登录，本地运行环境)上都要可以正常运行，但是两个OS在文件系统上就有很大不同）
@@ -34,3 +36,71 @@ class ReadTextFileArgs(BaseModel):
         if not str(v).strip():
             raise ValueError("file 不能为空")
         return v
+
+
+class SearchTextArgs(BaseModel):
+    query: str = Field(min_length=1, max_length=256, description="要查找的普通文本，不是正则表达式")
+    directory: Path = Path(".")
+    patterns: list[str] | None = None
+    case_sensitive: bool = False
+    max_results: int = Field(default=100, ge=1, le=500)
+
+    @field_validator("query")
+    @classmethod
+    def check_query(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("query 不能为空")
+        return value
+
+
+class WriteTextFileArgs(BaseModel):
+    file: Path
+    content: str
+    overwrite: bool = False
+    create_parents: bool = True
+    expected_sha256: str | None = Field(default=None, pattern=r"^[0-9a-fA-F]{64}$")
+
+
+class InsertBeforeChange(BaseModel):
+    operation: Literal["insert_before"]
+    anchor: str = Field(min_length=1)
+    content: str
+
+
+class InsertAfterChange(BaseModel):
+    operation: Literal["insert_after"]
+    anchor: str = Field(min_length=1)
+    content: str
+
+
+class ReplaceChange(BaseModel):
+    operation: Literal["replace"]
+    old_text: str = Field(min_length=1)
+    new_text: str
+
+
+class DeleteChange(BaseModel):
+    operation: Literal["delete"]
+    old_text: str = Field(min_length=1)
+
+
+class AppendChange(BaseModel):
+    operation: Literal["append"]
+    content: str
+
+
+EditChange = Annotated[
+    InsertBeforeChange
+    | InsertAfterChange
+    | ReplaceChange
+    | DeleteChange
+    | AppendChange,
+    Field(discriminator="operation"),
+]
+
+
+class EditTextFileArgs(BaseModel):
+    file: Path
+    # 编辑必须基于最近一次读取到的文件版本，避免覆盖其他人的修改。
+    expected_sha256: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
+    changes: list[EditChange] = Field(min_length=1, max_length=50)

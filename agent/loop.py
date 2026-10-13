@@ -51,7 +51,7 @@ class AgentLoop:
 
             for tool_call in tool_calls:
                 tool_call_content = tool_call.content
-                result: ToolExecutionResult = self.executor.execute(
+                result: ToolExecutionResult = await self.executor.execute_async(
                     tool_name=tool_call_content["name"],
                     arguments=tool_call_content["arguments"]
                 )
@@ -65,7 +65,7 @@ class AgentLoop:
                         "output": (
                             str(result.output)
                             if result.success
-                            else f"Tool Error: {result.error}"
+                            else f"Tool Error [{result.error_code or 'TOOL_ERROR'}]: {result.error}"
                         )
                     }
                 )
