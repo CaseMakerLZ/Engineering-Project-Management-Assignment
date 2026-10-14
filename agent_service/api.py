@@ -22,7 +22,10 @@ def create_app(
 ) -> FastAPI:
     settings = settings or Settings.from_environment()
     repository = repository or MySQLRunRepository(settings)
-    run_service = run_service or RunService(repository, CurrentAgentRuntime())
+    run_service = run_service or RunService(
+        repository,
+        CurrentAgentRuntime(settings.workspace_root),
+    )
 
     app = FastAPI(
         title="Python Agent Service",

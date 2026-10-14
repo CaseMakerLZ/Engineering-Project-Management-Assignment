@@ -4,8 +4,21 @@ testFiles/
 examples/
 data/
 test*
+**/src/test/
+**/tests/
+**/__tests__/
+**/*test*
+**/*Test*
+*_test.*
+*_tests.*
+*Test.java
+*Tests.java
 docs/
-
+实际情况.txt
+tools/目录结构
+开发手册
+jmeter.log
+AGENTS.md
 # Local environment variables and secrets
 .env
 .env.*

@@ -7,7 +7,7 @@ from agent.loop import AgentLoop
 from agent.message import AgentMessage, MessageType
 from llm.client import LLMClient
 from tools.executor import ToolExecutor
-from tools.registry import ToolRegistry
+from tools.bootstrap import create_default_registry
 
 
 @dataclass(slots=True)
@@ -25,12 +25,17 @@ class AgentRuntime(Protocol):
 
 class CurrentAgentRuntime:
     """使用当前手写 Agent Core 执行任务。"""
+
+    def __init__(self, workspace_root: str) -> None:
+        self.workspace_root = workspace_root
+
     # 以后替换 Agent 实现时，只需要增加新的 Runtime，不用修改任务服务。
     async def run(self, prompt: str, project_id: str | None = None, context: list[dict[str, str]] | None = None) -> RuntimeResult:
-        # 当前 Agent Core 还不使用 project_id，因此这里只保留接口字段。
-        del project_id
         llm = LLMClient()
-        registry = ToolRegistry()
+        registry = create_default_registry(
+            workspace_root=self.workspace_root,
+            project_id=project_id,
+        )
         executor = ToolExecutor(registry)
         loop = AgentLoop(llm, registry, executor)
         agent = Agent(loop)
