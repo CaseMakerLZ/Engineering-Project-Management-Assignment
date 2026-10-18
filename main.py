@@ -3,15 +3,23 @@ from pathlib import Path
 
 from agent.agent import Agent
 from agent.loop import AgentLoop
+from agent_service.config import Settings
 from llm.client import LLMClient
 from tools.bootstrap import create_default_registry
 from tools.executor import ToolExecutor
 
 
 async def main():
-    llm = LLMClient()
+    settings = Settings.from_environment()
+    llm = LLMClient(
+        api_key=settings.llm_api_key,
+        base_url=settings.llm_base_url,
+        model=settings.llm_model_id,
+        timeout_seconds=settings.llm_timeout_seconds,
+    )
     registry = create_default_registry(
         workspace_root=Path(__file__).resolve().parent,
+        web_api_key=settings.web_api_key,
     )
     executor = ToolExecutor(registry)
     loop = AgentLoop(llm,registry,executor)

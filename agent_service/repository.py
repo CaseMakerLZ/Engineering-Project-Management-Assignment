@@ -28,7 +28,7 @@ def _utc_datetime(value: datetime | None) -> datetime | None:
 
 
 class RunRepository(Protocol):
-    """RunService 需要的数据保存功能。"""
+    """RunService 需要的数据保存功能。(接口)"""
     def initialize(self) -> None: ...
     def create_run(self, run: Run) -> Run: ...
     def get_run(self, run_id: str) -> Run | None: ...
@@ -38,7 +38,7 @@ class RunRepository(Protocol):
 
 
 class MySQLRunRepository:
-    """Python 服务使用的 MySQL 数据保存实现。"""
+    """Python 服务使用的 MySQL 数据保存实现。(上面接口的实现)"""
 
     _schema = (
         """

@@ -24,7 +24,7 @@ def create_app(
     repository = repository or MySQLRunRepository(settings)
     run_service = run_service or RunService(
         repository,
-        CurrentAgentRuntime(settings.workspace_root),
+        CurrentAgentRuntime(settings),
     )
 
     app = FastAPI(
@@ -62,6 +62,7 @@ def create_app(
         # 先保存任务并立即返回 ID，耗时的 Agent 工作放到后台执行。
         run = run_service.create(request)
         background_tasks.add_task(run_service.execute, run.run_id)
+        #下面一行返回是返回给java调用端的
         return RunStatusResponse(run_id=run.run_id, status=run.status)
 
     @router.get(
