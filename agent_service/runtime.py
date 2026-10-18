@@ -31,6 +31,18 @@ def resolve_project_root(settings: Settings, project_id: str | None) -> Path:
     """根据运行模式解析本次任务实际允许访问的项目目录。"""
     mode = settings.execution_mode.lower()
     if mode == "local":
+        if settings.local_projects:
+            if project_id is None:
+                raise ToolError(ToolErrorCode.CONFIGURATION_ERROR, "本地运行必须提供 project_id")
+            project = settings.local_projects.get(project_id)
+            if project is None or not project.enabled:
+                raise ToolError(ToolErrorCode.CONFIGURATION_ERROR, "请求的本地项目不存在或未启用")
+            project_root = Path(project.root).expanduser().resolve()
+            if not project_root.is_dir():
+                raise ToolError(ToolErrorCode.CONFIGURATION_ERROR, "本地项目目录不存在或不是目录")
+            return project_root
+
+        # 兼容迁移前的单项目 Settings；新的配置应使用 TOML local.projects。
         if not settings.local_project_id or not settings.local_project_root:
             raise ToolError(ToolErrorCode.CONFIGURATION_ERROR, "本地运行必须配置项目 ID 和项目目录")
         if project_id != settings.local_project_id:

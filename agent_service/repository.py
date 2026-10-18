@@ -7,6 +7,7 @@ from typing import Any, Protocol
 
 from .config import Settings
 from .domain import Run, RunMessage, RunStatus
+from .sqlite_repository import SQLiteRunRepository
 
 
 def _decode_json(value: Any) -> Any:
@@ -210,3 +211,22 @@ class MySQLRunRepository:
             ]
         finally:
             connection.close()
+
+
+def create_run_repository(settings: Settings) -> RunRepository:
+    """根据配置创建本地或云端的运行记录仓储。
+    云端/本地运行转化工厂
+    选择逻辑集中在启动边界，RunService 仍然只依赖 RunRepository 接口。
+    ``auto`` 是默认值：本地模式使用 SQLite，云端模式使用 MySQL。
+    """
+    backend = settings.storage_backend.lower()
+    if backend == "auto":
+        backend = "sqlite" if settings.execution_mode.lower() == "local" else "mysql"
+
+    if backend == "sqlite":
+        return SQLiteRunRepository(settings.sqlite_database_path)
+    if backend == "mysql":
+        return MySQLRunRepository(settings)
+    raise ValueError(
+        "AGENT_SERVICE_STORAGE_BACKEND 只能是 auto、sqlite 或 mysql"
+    )

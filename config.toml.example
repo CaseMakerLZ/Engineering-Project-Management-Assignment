@@ -1,0 +1,47 @@
+# Copy this file to config.toml and fill in local values.
+# config.toml is ignored by Git because it may contain local paths or credentials.
+
+[service]
+name = "python-agent-service"
+internal_token = ""
+max_prompt_length = 20000
+
+[llm]
+model_id = ""
+api_key = ""
+base_url = ""
+timeout_seconds = 200.0
+
+[web]
+api_key = ""
+
+[storage]
+# auto selects SQLite for local mode and MySQL for cloud mode.
+backend = "auto"
+# Relative paths are resolved from the directory containing config.toml.
+path = "data/agent.sqlite3"
+
+[mysql]
+host = "127.0.0.1"
+port = 3306
+user = "root"
+password = ""
+database = "agent_javabackend"
+
+[runtime]
+mode = "local"
+
+# The local project key is also stored as project_id for run and future log ownership.
+[local.projects."cmc"]
+name = "cmc"
+root = "C:/Users/your-name/Documents/cmc"
+enabled = true
+
+[local.projects."demo"]
+name = "demo"
+root = "D:/javaabout/demo"
+enabled = true
+
+[cloud]
+# Used only when runtime.mode = "cloud".
+workspace_root = "data/workspaces"

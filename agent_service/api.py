@@ -2,7 +2,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, Header, HTTPEx
 
 from .config import Settings
 from .domain import Run, RunMessage
-from .repository import MySQLRunRepository, RunRepository
+from .repository import RunRepository, create_run_repository
 from .schemas import (
     CreateRunRequest,
     HealthResponse,
@@ -21,7 +21,7 @@ def create_app(
     run_service: RunService | None = None,
 ) -> FastAPI:
     settings = settings or Settings.from_environment()
-    repository = repository or MySQLRunRepository(settings)
+    repository = repository or create_run_repository(settings)
     run_service = run_service or RunService(
         repository,
         CurrentAgentRuntime(settings),
