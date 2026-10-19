@@ -215,7 +215,7 @@ class MySQLRunRepository:
 
 def create_run_repository(settings: Settings) -> RunRepository:
     """根据配置创建本地或云端的运行记录仓储。
-    云端/本地运行转化工厂
+    云端/本地运行转化工厂(SQLite/MySQL 选择层)
     选择逻辑集中在启动边界，RunService 仍然只依赖 RunRepository 接口。
     ``auto`` 是默认值：本地模式使用 SQLite，云端模式使用 MySQL。
     """
