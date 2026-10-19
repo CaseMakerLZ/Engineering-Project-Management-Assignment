@@ -28,6 +28,7 @@ def create_default_registry(
     workspace_root: str | Path | None = None,
     project_id: str | None = None,
     *,
+    project_root: str | Path | None = None,
     web_api_key: str | None = None,
     web_search_endpoint: str = "https://api.tavily.com/search",
     web_timeout_seconds: float = 10.0,
@@ -41,28 +42,39 @@ def create_default_registry(
     local_terminal_concurrency_limit: threading.Semaphore | None = None,
     local_terminal_cancel_event: threading.Event | None = None,
 ) -> ToolRegistry:
-    """创建绑定到一个项目目录的工具注册表。
+    """创建绑定到一个已经确定的项目目录的工具注册表。
 
-    workspace_root 是所有项目目录的父目录；project_id 对应其中一个子目录。
+    正式运行时优先传入 project_root。workspace_root + project_id 保留给云端
+    目录布局和已有本地测试使用，避免改变现有工具注册入口的行为。
     """
-    root = Path(workspace_root) if workspace_root is not None else Path.cwd()
-    root = root.expanduser().resolve()
-    if not root.is_dir():
-        raise ToolError(ToolErrorCode.CONFIGURATION_ERROR, "工作区根目录不存在或不是目录")
-
-    if project_id is not None:
-        # Java 当前使用 UUID。限制为可移植的单层目录名，避免 Windows/Linux 路径解释不同。
-        if not re.fullmatch(r"[A-Za-z0-9_-]+", project_id):
-            raise ToolError(ToolErrorCode.CONFIGURATION_ERROR, "project_id 只能包含字母、数字、下划线和连字符")
-        project_path = root / project_id
-        if project_path.is_symlink():
-            raise ToolError(ToolErrorCode.CONFIGURATION_ERROR, "项目工作区不能是符号链接")
-        project_root = project_path.resolve()
-        if not project_root.is_relative_to(root) or not project_root.is_dir():
-            raise ToolError(ToolErrorCode.CONFIGURATION_ERROR, "项目工作区不存在或不在工作区根目录内")
+    if project_root is not None:
+        if workspace_root is not None or project_id is not None:
+            raise ToolError(
+                ToolErrorCode.CONFIGURATION_ERROR,
+                "project_root 不能与 workspace_root 或 project_id 同时传入",
+            )
+        project_root = Path(project_root).expanduser().resolve()
+        if not project_root.is_dir():
+            raise ToolError(ToolErrorCode.CONFIGURATION_ERROR, "项目工作区不存在或不是目录")
     else:
-        # 本地调试模式：未指定 project_id 时，workspace_root 本身是当前工作区。
-        project_root = root
+        root = Path(workspace_root) if workspace_root is not None else Path.cwd()
+        root = root.expanduser().resolve()
+        if not root.is_dir():
+            raise ToolError(ToolErrorCode.CONFIGURATION_ERROR, "工作区根目录不存在或不是目录")
+
+        if project_id is not None:
+            # Java 当前使用 UUID。限制为可移植的单层目录名，避免 Windows/Linux 路径解释不同。
+            if not re.fullmatch(r"[A-Za-z0-9_-]+", project_id):
+                raise ToolError(ToolErrorCode.CONFIGURATION_ERROR, "project_id 只能包含字母、数字、下划线和连字符")
+            project_path = root / project_id
+            if project_path.is_symlink():
+                raise ToolError(ToolErrorCode.CONFIGURATION_ERROR, "项目工作区不能是符号链接")
+            project_root = project_path.resolve()
+            if not project_root.is_relative_to(root) or not project_root.is_dir():
+                raise ToolError(ToolErrorCode.CONFIGURATION_ERROR, "项目工作区不存在或不在工作区根目录内")
+        else:
+            # 本地调试模式：未指定 project_id 时，workspace_root 本身是当前工作区。
+            project_root = root
 
     registry = ToolRegistry()
     for tool in build_filesystem_tools(project_root):

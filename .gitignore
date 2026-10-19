@@ -22,7 +22,15 @@ AGENTS.md
 # Local environment variables and secrets
 .env
 .env.*
-!.env.example
+config.toml
+/agent_service/tests/
+
+# Local learning notes and the API test are kept in the workspace but not committed.
+/agent_service/tests/test_api.py
+/docs/2026-10-18-配置迁移与SQLite接入总结.md
+/agent_service/API_CONTRACT.md
+/agent_service/README.md
+/agent_service/分析报告.md
 
 HELP.md
 target/
@@ -57,3 +65,4 @@ build/
 
 ### VS Code ###
 .vscode/
+/outputs/
