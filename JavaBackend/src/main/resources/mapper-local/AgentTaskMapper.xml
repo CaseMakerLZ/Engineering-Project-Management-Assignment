@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.Agent.javabackend.Mapper.AgentTaskMapper">
+    <resultMap id="AgentTaskMap" type="com.Agent.javabackend.entity.MessageContainer.AgentTask">
+        <id property="id" column="task_id"/>
+        <result property="conversationId" column="conversation_id"/>
+        <result property="prompt" column="prompt"/>
+        <result property="pythonRunId" column="python_run_id"/>
+        <result property="status" column="status"/>
+        <result property="result" column="result"/>
+        <result property="error" column="error"/>
+        <result property="createdAt" column="task_created_at" typeHandler="com.Agent.javabackend.Config.SqliteOffsetDateTimeTypeHandler"/>
+        <result property="startedAt" column="started_at" typeHandler="com.Agent.javabackend.Config.SqliteOffsetDateTimeTypeHandler"/>
+        <result property="finishedAt" column="finished_at" typeHandler="com.Agent.javabackend.Config.SqliteOffsetDateTimeTypeHandler"/>
+    </resultMap>
+
+    <insert id="insert">
+        INSERT INTO agent_task (id, conversation_id, python_run_id, created_at)
+        VALUES (#{id}, #{conversationId}, #{pythonRunId}, #{createdAt})
+    </insert>
+
+    <!-- 本地运行以 Python 的 agent_run 为状态真相；Java 刷新任务时同步更新该记录。 -->
+    <update id="updateExecution">
+        UPDATE agent_run
+        SET status = #{status}, result = #{result}, error = #{error},
+            started_at = #{startedAt}, finished_at = #{finishedAt}
+        WHERE run_id = #{pythonRunId}
+    </update>
+
+    <select id="findById" resultMap="AgentTaskMap">
+        SELECT t.id AS task_id, t.conversation_id, t.python_run_id,
+               r.prompt, r.status, r.result, r.error,
+               t.created_at AS task_created_at, r.started_at, r.finished_at
+        FROM agent_task t JOIN agent_run r ON r.run_id = t.python_run_id
+        WHERE t.id = #{taskId}
+    </select>
+
+    <select id="findByConversationId" resultMap="AgentTaskMap">
+        SELECT t.id AS task_id, t.conversation_id, t.python_run_id,
+               r.prompt, r.status, r.result, r.error,
+               t.created_at AS task_created_at, r.started_at, r.finished_at
+        FROM agent_task t JOIN agent_run r ON r.run_id = t.python_run_id
+        WHERE t.conversation_id = #{conversationId}
+        ORDER BY t.created_at, t.id
+    </select>
+</mapper>

@@ -21,6 +21,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.nio.file.Paths;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -44,11 +45,12 @@ class ConversationServiceImplTest {
                     new com.Agent.javabackend.dto.ConversationDTO.ContextMessage("assistant", "first answer")
             );
         });
-        ProjectServiceImpl projects = new ProjectServiceImpl(projectRepository);
+        ProjectServiceImpl projects = new ProjectServiceImpl(projectRepository, "local");
         ConversationServiceImpl conversations = new ConversationServiceImpl(projects, client,
                 conversationRepository, taskRepository, contextService);
         CreateProjectRequest projectRequest = new CreateProjectRequest();
         projectRequest.setName("Study project");
+        projectRequest.setLocalPath(Paths.get(".").toAbsolutePath().toString());
         String projectId = projects.create(projectRequest).getProjectId();
         var projectCaptor = org.mockito.ArgumentCaptor.forClass(com.Agent.javabackend.entity.MessageContainer.Project.class);
         verify(projectRepository).insert(projectCaptor.capture());

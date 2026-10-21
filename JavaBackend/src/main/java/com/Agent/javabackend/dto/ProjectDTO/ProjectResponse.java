@@ -15,6 +15,9 @@ public class ProjectResponse {
     private String name;
     /** 项目描述。 */
     private String description;
+    /** 本地模式下绑定的项目目录。 */
+    @JsonProperty("local_path")
+    private String localPath;
     /** 项目创建时间。 */
     @JsonProperty("created_at")
     private OffsetDateTime createdAt;

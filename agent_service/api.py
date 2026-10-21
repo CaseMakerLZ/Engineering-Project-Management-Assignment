@@ -34,7 +34,7 @@ def create_app(
     )
     router = APIRouter(prefix="/api/internal")
 
-    # 如果设置了令牌，Java 每次请求都必须带上相同的令牌。
+    # 如果设置了令牌，Java 每次请求都必须带上相同的令牌，保护AgentCore的各个接口只能被java端访问。
     async def verify_token(
         x_service_token: str | None = Header(default=None),
     ) -> None:

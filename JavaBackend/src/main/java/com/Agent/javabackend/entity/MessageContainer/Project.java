@@ -13,6 +13,8 @@ public class Project {
     private String name;
     /** 项目描述。 */
     private String description;
+    /** 本地模式下绑定的真实项目目录；云端模式不使用。 */
+    private String localPath;
     /** 项目所有者 ID，用户功能完成后使用。 */
     private String ownerId;
     /** 项目创建时间。 */

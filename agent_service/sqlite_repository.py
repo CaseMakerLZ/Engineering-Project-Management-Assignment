@@ -18,7 +18,7 @@ from .domain import Run, RunMessage, RunStatus
 
 
 class SQLiteRunRepository:
-    """把 Agent 运行记录保存到一个本地 SQLite 文件。"""
+    """把 Agent 运行、上下文和过程消息保存到同一个 SQLite 文件。"""
 
     _schema = (
         """
@@ -88,7 +88,7 @@ class SQLiteRunRepository:
         return self._connection
 
     def initialize(self) -> None:
-        """幂等创建运行记录表。"""
+        """幂等创建运行记录表和过程消息表。"""
         if self._initialized:
             return
 
@@ -96,8 +96,18 @@ class SQLiteRunRepository:
             if self._initialized:
                 return
             connection = self._connect()
-            for statement in self._schema:
-                connection.execute(statement)
+            # 兼容已经由 JSONL 版本创建的 agent_run：它缺少 context_json，
+            # 但仍然可以通过一次本地结构升级继续使用同一个 SQLite 文件。
+            connection.execute(self._schema[0])
+            columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(agent_run)").fetchall()
+            }
+            if "context_json" not in columns:
+                connection.execute(
+                    "ALTER TABLE agent_run ADD COLUMN context_json TEXT NOT NULL DEFAULT '[]'"
+                )
+            connection.execute(self._schema[1])
             self._initialized = True
 
     def close(self) -> None:
@@ -109,7 +119,7 @@ class SQLiteRunRepository:
             self._initialized = False
 
     def create_run(self, run: Run) -> Run:
-        """保存一条初始运行记录。"""
+        """保存一条初始运行记录及其启动上下文。"""
         self.initialize()
         with self._connection_lock:
             connection = self._connect()
@@ -254,6 +264,10 @@ def _to_sqlite_datetime(value: datetime | None) -> str | None:
 def _from_sqlite_datetime(value: str | None) -> datetime | None:
     if value is None:
         return None
+    # Java OffsetDateTime.toString() 对 UTC 使用结尾 `Z`；Python 3.10 的
+    # datetime.fromisoformat 只接受 `+00:00`，因此在解析前统一转换。
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
     parsed = datetime.fromisoformat(value)
     return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
 

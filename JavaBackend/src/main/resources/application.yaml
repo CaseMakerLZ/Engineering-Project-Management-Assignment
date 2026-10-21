@@ -1,24 +1,9 @@
 spring:
   application:
-    # Java 对外提供业务 API 时使用的应用名称。
     name: java-backend
-
-  datasource:
-    password: 123456
-    username: root
-    url: jdbc:mysql://localhost:3306/agent_javabackend
-    driver-class-name: com.mysql.cj.jdbc.Driver
-
-mybatis:
-  # Mapper 接口只声明方法，具体 SQL 由 resources/mapper/*.xml 提供。
-  mapper-locations: classpath:mapper/*.xml
-  #  autoconfigure:
-    # 当前阶段 Java 只做代理接口，尚未建立自己的 MySQL 数据模型。
-    # 虽然 pom 已预留 MyBatis/MySQL 依赖，若不显式排除，Spring Boot
-    # 会在启动时尝试创建 DataSource，并因没有 JDBC URL 直接失败。
-    # 后续开始实现 User/Project/Task 持久化时，删除这一项并补充 datasource 配置。
-#    exclude:
-#      - org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration
+  profiles:
+    # 本地开发默认不连接 MySQL；云端运行时显式设置 SPRING_PROFILES_ACTIVE=cloud。
+    default: local
 
 server:
   # Java 后端对外监听的端口；Python Agent Service 默认监听 8000。

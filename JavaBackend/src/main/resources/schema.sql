@@ -1,3 +1,27 @@
+CREATE TABLE IF NOT EXISTS `user` (
+    user_id VARCHAR(36) PRIMARY KEY,
+    username VARCHAR(20) NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',
+    created_at DATETIME(6) NOT NULL,
+    updated_at DATETIME(6) NOT NULL,
+    last_login_at DATETIME(6),
+    UNIQUE KEY uk_user_username (username)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS auth_session (
+    session_id VARCHAR(36) PRIMARY KEY,
+    user_id VARCHAR(36) NOT NULL,
+    token_hash CHAR(64) NOT NULL,
+    expires_at DATETIME(6) NOT NULL,
+    revoked_at DATETIME(6),
+    created_at DATETIME(6) NOT NULL,
+    UNIQUE KEY uk_auth_session_token_hash (token_hash),
+    INDEX idx_auth_session_user (user_id),
+    INDEX idx_auth_session_expires (expires_at),
+    CONSTRAINT fk_auth_session_user FOREIGN KEY (user_id) REFERENCES `user`(user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS project (
     id VARCHAR(36) PRIMARY KEY,
     name VARCHAR(128) NOT NULL,

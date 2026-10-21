@@ -1,0 +1,15 @@
+spring:
+  config:
+    activate:
+      on-profile: local
+  datasource:
+    # Java 和 Python 本地服务必须指向同一个文件。
+    url: jdbc:sqlite:${AGENT_SQLITE_PATH:../data/agent.sqlite3}
+    driver-class-name: org.sqlite.JDBC
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:schema-local.sql
+
+mybatis:
+  mapper-locations: classpath:mapper-local/*.xml

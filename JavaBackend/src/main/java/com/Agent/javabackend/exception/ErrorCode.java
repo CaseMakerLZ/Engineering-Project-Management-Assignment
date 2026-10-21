@@ -12,8 +12,8 @@ public enum ErrorCode {
 
     //用户与权限域(20000–29999)
     //TODO: 要等用户业务开始写的时候再同步推进,这里先给出几个基本都会用到的
-    USER_NOT_FOUND(20001,"未找到此用户",HttpStatus.NOT_FOUND),
-    PASSWORD_ERROR(20002,"密码错误",HttpStatus.UNAUTHORIZED),
+    USER_NOT_FOUND(20001,"用户名已存在",HttpStatus.NOT_FOUND),
+    PASSWORD_ERROR(20002,"密码或用户名错误",HttpStatus.UNAUTHORIZED),
 
     //Agent任务域（30000-39999）
     AGENT_RUN_NOT_FOUND(30001,"Agent Run 不存在",HttpStatus.NOT_FOUND),

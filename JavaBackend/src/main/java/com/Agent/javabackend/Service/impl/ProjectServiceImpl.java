@@ -11,14 +11,20 @@ import org.springframework.stereotype.Service;
 
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Value;
 
 @Service
 public class ProjectServiceImpl implements ProjectService {
     private final ProjectMapper projects;
+    private final String activeProfile;
 
-    public ProjectServiceImpl(ProjectMapper projects) {
+    public ProjectServiceImpl(ProjectMapper projects,
+                              @Value("${spring.profiles.active:local}") String activeProfile) {
         this.projects = projects;
+        this.activeProfile = activeProfile;
     }
 
     @Override
@@ -28,6 +34,16 @@ public class ProjectServiceImpl implements ProjectService {
         project.setId(UUID.randomUUID().toString());
         project.setName(request.getName());
         project.setDescription(request.getDescription());
+        if ("local".equalsIgnoreCase(activeProfile)) {
+            if (request.getLocalPath() == null || request.getLocalPath().isBlank()) {
+                throw new BaseException(ErrorCode.INVALID_ARGUMENT, "本地项目目录不得为空");
+            }
+            Path localPath = Path.of(request.getLocalPath()).toAbsolutePath().normalize();
+            if (!Files.isDirectory(localPath)) {
+                throw new BaseException(ErrorCode.INVALID_ARGUMENT, "项目目录不存在或不是目录");
+            }
+            project.setLocalPath(localPath.toString());
+        }
         project.setCreatedAt(now);
         project.setUpdatedAt(now);
         projects.insert(project);
@@ -54,6 +70,7 @@ public class ProjectServiceImpl implements ProjectService {
         response.setProjectId(project.getId());
         response.setName(project.getName());
         response.setDescription(project.getDescription());
+        response.setLocalPath(project.getLocalPath());
         response.setCreatedAt(project.getCreatedAt());
         response.setUpdatedAt(project.getUpdatedAt());
         return response;

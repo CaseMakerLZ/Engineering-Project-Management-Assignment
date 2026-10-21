@@ -31,16 +31,8 @@ database = "agent_javabackend"
 [runtime]
 mode = "local"
 
-# The local project key is also stored as project_id for run and future log ownership.
-[local.projects."cmc"]
-name = "cmc"
-root = "C:/Users/your-name/Documents/cmc"
-enabled = true
-
-[local.projects."demo"]
-name = "demo"
-root = "D:/javaabout/demo"
-enabled = true
+# 新项目的本地目录由 Java 写入共享 SQLite 的 project.local_path。
+# [local.projects] 仅用于兼容迁移前的旧项目，不需要手工维护。
 
 [cloud]
 # Used only when runtime.mode = "cloud".

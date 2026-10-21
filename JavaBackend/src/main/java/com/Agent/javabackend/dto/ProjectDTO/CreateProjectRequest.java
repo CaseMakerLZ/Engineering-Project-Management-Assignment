@@ -2,6 +2,7 @@ package com.Agent.javabackend.dto.ProjectDTO;
 
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
 
 /** 创建项目时，前端提交的数据。 */
@@ -15,4 +16,9 @@ public class CreateProjectRequest {
     /** 项目描述，可以为空。 */
     @Size(max = 2000, message = "项目描述长度不得超过2000")
     private String description;
+
+    /** 本地模式下绑定的已有目录或待创建目录。 */
+    @Size(max = 1000, message = "项目目录长度不得超过1000")
+    @JsonProperty("local_path")
+    private String localPath;
 }

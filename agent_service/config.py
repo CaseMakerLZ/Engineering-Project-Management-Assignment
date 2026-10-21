@@ -14,15 +14,6 @@ CONFIG_FILE = PROJECT_ROOT / "config.toml"
 
 
 @dataclass(frozen=True, slots=True)
-class LocalProjectConfig:
-    """TOML 中一个本地项目的最小配置。"""
-
-    root: str
-    name: str | None = None
-    enabled: bool = True
-
-
-@dataclass(frozen=True, slots=True)
 class Settings:
     service_name: str = "python-agent-service"
     # LLM 配置与数据库、运行模式配置统一由 Settings 管理。
@@ -41,8 +32,8 @@ class Settings:
     sqlite_database_path: str = "data/agent.sqlite3"
     internal_token: str | None = None
     max_prompt_length: int = 20_000
-    # 本地项目由 TOML 的 key 映射到真实目录；project_id 仍作为运行和日志归属标识。
-    local_projects: dict[str, LocalProjectConfig] = field(default_factory=dict)
+    # 兼容旧项目的 TOML 映射；新项目优先从共享 SQLite 的 project.local_path 读取。
+    local_projects: dict[str, str] = field(default_factory=dict)
     # 兼容旧的 Settings 构造方式；新的本地配置使用 local_projects。
     local_project_id: str | None = None
     local_project_root: str | None = None
@@ -93,7 +84,6 @@ class Settings:
             "AGENT_SERVICE_SQLITE_DATABASE", storage.get("path"), environment_fallback,
             "data/agent.sqlite3", selected_config.parent
         )
-
         return cls(
             service_name=_string_setting(
                 "AGENT_SERVICE_NAME", service.get("name"), environment_fallback, "python-agent-service"
@@ -151,27 +141,20 @@ def _section(values: dict[str, Any], name: str) -> dict[str, Any]:
     return section
 
 
-def _load_local_projects(local: dict[str, Any], config_dir: Path) -> dict[str, LocalProjectConfig]:
+def _load_local_projects(local: dict[str, Any], config_dir: Path) -> dict[str, str]:
     projects = local.get("projects", {})
     if not isinstance(projects, dict):
         raise ValueError("[local.projects] 必须是项目表")
 
-    result: dict[str, LocalProjectConfig] = {}
+    result: dict[str, str] = {}
     for project_id, raw in projects.items():
-        if not isinstance(project_id, str) or not isinstance(raw, dict):
-            raise ValueError("每个本地项目必须使用 [local.projects.<project_id>] 配置")
-        root = raw.get("root")
-        if not isinstance(root, str) or not root.strip():
-            raise ValueError(f"本地项目 {project_id!r} 必须配置 root")
-        enabled = raw.get("enabled", True)
-        if not isinstance(enabled, bool):
-            raise ValueError(f"本地项目 {project_id!r} 的 enabled 必须是布尔值")
-        name = raw.get("name")
-        if name is not None and not isinstance(name, str):
-            raise ValueError(f"本地项目 {project_id!r} 的 name 必须是字符串")
-        result[project_id] = LocalProjectConfig(
-            root=_resolve_path(root, config_dir), name=name, enabled=enabled
-        )
+        if not isinstance(project_id, str) or not project_id.strip():
+            raise ValueError("每个本地项目必须使用非空 project_id 作为键")
+        if not isinstance(raw, str) or not raw.strip():
+            raise ValueError(f"本地项目 {project_id!r} 的值必须是项目目录路径字符串")
+        resolved = _resolve_path(raw, config_dir)
+        assert resolved is not None
+        result[project_id] = resolved
     return result
 
 

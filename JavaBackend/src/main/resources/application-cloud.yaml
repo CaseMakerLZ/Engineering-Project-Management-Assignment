@@ -1,0 +1,16 @@
+spring:
+  config:
+    activate:
+      on-profile: cloud
+  datasource:
+    password: ${MYSQL_PASSWORD:123456}
+    username: ${MYSQL_USERNAME:root}
+    url: jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:agent_javabackend}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  sql:
+    init:
+      mode: always
+      schema-locations: classpath:schema.sql
+
+mybatis:
+  mapper-locations: classpath:mapper/*.xml
