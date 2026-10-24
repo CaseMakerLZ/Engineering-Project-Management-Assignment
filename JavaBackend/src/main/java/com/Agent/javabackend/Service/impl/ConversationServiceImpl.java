@@ -3,7 +3,6 @@ package com.Agent.javabackend.Service.impl;
 import com.Agent.javabackend.Client.PythonAgentClient;
 import com.Agent.javabackend.Mapper.AgentTaskMapper;
 import com.Agent.javabackend.Mapper.ConversationMapper;
-import com.Agent.javabackend.Service.ContextService;
 import com.Agent.javabackend.Service.ConversationService;
 import com.Agent.javabackend.Service.ProjectService;
 import com.Agent.javabackend.dto.CreateRunRequest;
@@ -29,15 +28,13 @@ public class ConversationServiceImpl implements ConversationService {
     private final PythonAgentClient pythonAgentClient;
     private final ConversationMapper conversationMapper;
     private final AgentTaskMapper agentTaskMapper;
-    private final ContextService contextService;
 
     public ConversationServiceImpl(ProjectService projectService, PythonAgentClient pythonAgentClient,
-                                   ConversationMapper conversations, AgentTaskMapper tasks, ContextService contextService) {
+                                   ConversationMapper conversations, AgentTaskMapper tasks) {
         this.projectService = projectService;
         this.pythonAgentClient = pythonAgentClient;
         this.conversationMapper = conversations;
         this.agentTaskMapper = tasks;
-        this.contextService = contextService;
     }
 
     @Override
@@ -82,9 +79,6 @@ public class ConversationServiceImpl implements ConversationService {
             }
         }
 
-        //组装上下文
-        List<ContextMessage> context = contextService.assembleContext(previous);
-
         // Java Task 表达用户可见的一轮对话；Python Run 表达实际的 Agent 执行。
         AgentTask task = new AgentTask();
         task.setId(UUID.randomUUID().toString());
@@ -95,7 +89,9 @@ public class ConversationServiceImpl implements ConversationService {
 
         CreateRunRequest runRequest = new CreateRunRequest(conversation.getProjectId(), request.getPrompt());
         runRequest.setConversationId(conversationId);
-        runRequest.setContext(context);
+        // 保留内部 HTTP 请求中的 context 字段，但不再由 Java 组装历史。
+        // Python 会根据 project_id、conversation_id 自己读取 agent_run。
+        runRequest.setContext(List.of());
         // Python 创建任务成功后再保存 Java Task，避免生成没有 run_id 的孤立任务。
         RunStatusResponse run = pythonAgentClient.createRun(runRequest);
         task.setPythonRunId(run.getRunId());

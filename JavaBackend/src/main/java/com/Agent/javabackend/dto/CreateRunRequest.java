@@ -28,7 +28,7 @@ public class CreateRunRequest {
     @Size(max=20000,message="提示词长度不得超过20000")
     private String prompt;
 
-    /** 之前的对话内容，帮助 Agent 理解本次问题。 */
+    /** 兼容旧请求的字段；当前 Java 发送空列表，历史由 Python 根据对话 ID 组装。 */
     private List<ContextMessage> context;
 
     public CreateRunRequest(String projectId, String prompt) {

@@ -20,8 +20,8 @@ agent-service:
 
 agent:
   context:
-    # 每次发送给 Python 的历史问答轮次数量；每轮会变成 user 和 assistant 两条消息。
-    # Python 当前最多接收 20 条 context 消息，因此默认值 10 与它保持一致。
+    # 旧 Java ContextService 的配置；正式任务链路现由 Python 读取历史。
+    # 暂时保留以兼容尚未移除的旧实现，不再控制实际 Agent 上下文。
     max-turns: ${AGENT_CONTEXT_MAX_TURNS:10}
 
 logging:

@@ -16,6 +16,7 @@ class CreateRunRequest(BaseModel):
     project_id: str | None = Field(default=None, max_length=128)
     conversation_id: str | None = Field(default=None, max_length=128)
     prompt: str = Field(min_length=1, max_length=20_000)
+    # 兼容旧版 Java/Python 请求格式；正式运行时历史由 Python 自行查询。
     context: list["ConversationContextMessage"] = Field(default_factory=list, max_length=20)
 
 

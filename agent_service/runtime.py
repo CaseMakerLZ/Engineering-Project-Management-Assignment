@@ -167,7 +167,6 @@ class CurrentAgentRuntime:
         if (
             self.repository is not None
             and project_id is not None
-            and conversation_id is not None
             and run_id is not None
             and created_at is not None
         ):

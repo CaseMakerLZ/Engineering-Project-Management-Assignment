@@ -76,7 +76,7 @@ class ContextBuilder:
         self,
         *,
         project_id: str,
-        conversation_id: str,
+        conversation_id: str | None,
         current_created_at: datetime,
         project_root: str | Path,
     ) -> ContextSnapshot:
@@ -91,7 +91,8 @@ class ContextBuilder:
         # 系统提示词预留位置：后续可在这里放全局 Agent 规则，但目前保持为空。
         system_prompt = ""
 
-        if self.max_history_turns == 0:
+        # 没有对话 ID 的单次运行仍可读取 AGENTS.md，但没有可归属的对话历史。
+        if self.max_history_turns == 0 or conversation_id is None:
             history: list[Run] = []
         else:
             history = self.repository.list_recent_completed_runs(

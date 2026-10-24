@@ -28,7 +28,9 @@ class RunService:
             project_id=request.project_id,
             conversation_id=request.conversation_id,
             prompt=request.prompt,
-            context=[message.model_dump() for message in request.context],
+            # context 字段仅保留 HTTP 兼容性；运行前的实际快照由 Python 组装后写入。
+            # 若组装前失败，也不能把请求里未使用的历史误记为模型上下文。
+            context=[],
             status=RunStatus.CREATED,
             result=None,
             error=None,
@@ -52,7 +54,6 @@ class RunService:
             runtime_result = await self.runtime.run(
                 run.prompt,
                 project_id=run.project_id,
-                context=run.context,
                 run_id=run.run_id,
                 conversation_id=run.conversation_id,
                 created_at=run.created_at,
