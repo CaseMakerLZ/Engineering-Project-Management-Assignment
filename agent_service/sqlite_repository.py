@@ -163,6 +163,30 @@ class SQLiteRunRepository:
             ).fetchone()
             return _run_from_row(row) if row is not None else None
 
+    def list_recent_completed_runs(
+        self, project_id: str, conversation_id: str, before_created_at: datetime, limit: int
+    ) -> list[Run]:
+        """读取当前运行之前、同项目同对话的最近已完成轮次，按时间正序返回。"""
+        if limit <= 0:
+            raise ValueError("历史轮次数量限制必须大于 0")
+        self.initialize()
+        with self._connection_lock:
+            connection = self._connect()
+            rows = connection.execute(
+                """
+                SELECT run_id, project_id, conversation_id, prompt, context_json,
+                       status, result, error, created_at, started_at, finished_at
+                FROM agent_run
+                WHERE project_id = ? AND conversation_id = ?
+                  AND status = ? AND created_at < ?
+                ORDER BY created_at DESC, run_id DESC
+                LIMIT ?
+                """,
+                (project_id, conversation_id, RunStatus.COMPLETED.value,
+                 _to_sqlite_datetime(before_created_at), limit),
+            ).fetchall()
+            return [_run_from_row(row) for row in reversed(rows)]
+
     def update_run(self, run: Run) -> Run:
         """更新运行状态、结果和时间字段。"""
         self.initialize()
@@ -188,6 +212,22 @@ class SQLiteRunRepository:
                 )
                 connection.commit()
                 return run
+            except Exception:
+                connection.rollback()
+                raise
+
+    def update_context(self, run_id: str, context: list[dict[str, Any]]) -> None:
+        """保存本次运行真正注入 Agent 的初始上下文快照。"""
+        self.initialize()
+        with self._connection_lock:
+            connection = self._connect()
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute(
+                    "UPDATE agent_run SET context_json = ? WHERE run_id = ?",
+                    (json.dumps(context, ensure_ascii=False), run_id),
+                )
+                connection.commit()
             except Exception:
                 connection.rollback()
                 raise

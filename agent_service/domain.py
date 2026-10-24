@@ -19,7 +19,7 @@ class Run(BaseModel):
     project_id: str | None
     conversation_id: str | None
     prompt: str
-    context: list[dict[str, str]] = Field(default_factory=list)
+    context: list[dict[str, Any]] = Field(default_factory=list)
     status: RunStatus
     result: str | None
     error: str | None

@@ -1,11 +1,13 @@
 # 这个文件把正式 HTTP 服务连接到现有的 Agent Core。
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 import re
 import sqlite3
-from typing import Protocol
+from typing import Any, Protocol
 
 from agent.agent import Agent
+from agent.context import ContextBuilder
 from agent.loop import AgentLoop
 from agent.message import AgentMessage, MessageType
 from .config import Settings
@@ -24,7 +26,16 @@ class RuntimeResult:
 
 class AgentRuntime(Protocol):
     """所有 Agent 运行方式都需要提供的统一调用方法。"""
-    async def run(self, prompt: str, project_id: str | None = None, context: list[dict[str, str]] | None = None) -> RuntimeResult:
+    async def run(
+        self,
+        prompt: str,
+        project_id: str | None = None,
+        context: list[dict[str, Any]] | None = None,
+        *,
+        run_id: str | None = None,
+        conversation_id: str | None = None,
+        created_at: datetime | None = None,
+    ) -> RuntimeResult:
         ...
 
 
@@ -119,11 +130,22 @@ def _resolve_local_project_from_database(settings: Settings, project_id: str | N
 class CurrentAgentRuntime:
     """使用当前手写 Agent Core 执行任务。"""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, repository: Any | None = None) -> None:
         self.settings = settings
+        # 与 RunService 共用同一个仓储，保证历史读取和快照更新使用同一数据源。
+        self.repository = repository
 
     # 以后替换 Agent 实现时，只需要增加新的 Runtime，不用修改任务服务。
-    async def run(self, prompt: str, project_id: str | None = None, context: list[dict[str, str]] | None = None) -> RuntimeResult:
+    async def run(
+        self,
+        prompt: str,
+        project_id: str | None = None,
+        context: list[dict[str, Any]] | None = None,
+        *,
+        run_id: str | None = None,
+        conversation_id: str | None = None,
+        created_at: datetime | None = None,
+    ) -> RuntimeResult:
         #组装Agent
         llm = LLMClient(
             api_key=self.settings.llm_api_key,
@@ -139,10 +161,72 @@ class CurrentAgentRuntime:
         executor = ToolExecutor(registry)
         loop = AgentLoop(llm, registry, executor)
         agent = Agent(loop)
-        #Python 遍历 Java 传来的上下文
-        for message in context or []:
-            message_type = MessageType.USER if message["role"] == "user" else MessageType.ASSISTANT
-            agent.state.add(AgentMessage(type=message_type, content=message["content"]))
+
+        # 新运行链路由 Python 根据 agent_run 身份组装上下文；缺少身份信息时
+        # 才兼容旧的 Java context 调用。
+        if (
+            self.repository is not None
+            and project_id is not None
+            and conversation_id is not None
+            and run_id is not None
+            and created_at is not None
+        ):
+            snapshot = ContextBuilder(self.repository).build(
+                project_id=project_id,
+                conversation_id=conversation_id,
+                current_created_at=created_at,
+                project_root=project_root,
+            )
+            initial_messages: list[AgentMessage] = []
+            # 系统提示词的注入位置：当前为空，未来可直接填入全局规则。
+            if snapshot.system_prompt.strip():
+                initial_messages.append(
+                    AgentMessage(MessageType.SYSTEM, snapshot.system_prompt)
+                )
+            if snapshot.project_instructions:
+                initial_messages.append(
+                    AgentMessage(
+                        MessageType.PROJECT_INSTRUCTIONS,
+                        snapshot.project_instructions,
+                    )
+                )
+            initial_messages.extend(snapshot.messages)
+            # 保存本轮真正使用的初始上下文，而不是 Java 请求中的旧快照。
+            self.repository.update_context(
+                run_id,
+                [_message_to_context(message) for message in initial_messages],
+            )
+        else:
+            # 兼容旧的测试或内部调用。
+            initial_messages = [
+                AgentMessage(
+                    type=MessageType.USER
+                    if message["role"] == "user"
+                    else MessageType.ASSISTANT,
+                    content=message["content"],
+                )
+                for message in context or []
+            ]
+
+        for message in initial_messages:
+            agent.state.add(message)
+        initial_history_length = len(initial_messages)
         result = await agent.run(prompt)
         # 历史消息只帮助本轮回答，不重复保存为本轮新消息。
-        return RuntimeResult(result=result, messages=agent.state.get_history()[len(context or []):])
+        return RuntimeResult(
+            result=result,
+            messages=agent.state.get_history()[initial_history_length:],
+        )
+
+
+def _message_to_context(message: AgentMessage) -> dict[str, Any]:
+    """将 Agent 内部消息转换为可写入 context_json 的通用结构。"""
+    role_by_type = {
+        MessageType.SYSTEM: "system",
+        MessageType.PROJECT_INSTRUCTIONS: "developer",
+        MessageType.USER: "user",
+        MessageType.ASSISTANT: "assistant",
+        MessageType.TOOL_CALL: "tool_call",
+        MessageType.TOOL_RESULT: "tool_result",
+    }
+    return {"role": role_by_type[message.type], "content": message.content}

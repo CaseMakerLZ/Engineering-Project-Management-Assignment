@@ -34,8 +34,12 @@ class RunRepository(Protocol):
     def create_run(self, run: Run) -> Run: ...
     def get_run(self, run_id: str) -> Run | None: ...
     def update_run(self, run: Run) -> Run: ...
+    def update_context(self, run_id: str, context: list[dict[str, Any]]) -> None: ...
     def append_messages(self, run_id: str, messages: list[tuple[str, Any]]) -> None: ...
     def list_messages(self, run_id: str) -> list[RunMessage]: ...
+    def list_recent_completed_runs(
+        self, project_id: str, conversation_id: str, before_created_at: datetime, limit: int
+    ) -> list[Run]: ...
 
 
 class MySQLRunRepository:
@@ -142,6 +146,45 @@ class MySQLRunRepository:
         finally:
             connection.close()
 
+    def list_recent_completed_runs(
+        self, project_id: str, conversation_id: str, before_created_at: datetime, limit: int
+    ) -> list[Run]:
+        """读取当前运行之前、同项目同对话的最近已完成轮次，按时间正序返回。(agent_run)"""
+        if limit <= 0:
+            raise ValueError("历史轮次数量限制必须大于 0")
+        self.initialize()
+        connection = self._connect()
+        try:
+            cursor = connection.cursor(dictionary=True)
+            cursor.execute(
+                """
+                SELECT run_id, project_id, conversation_id, prompt, context_json,
+                       status, result, error, created_at, started_at, finished_at
+                FROM agent_run
+                WHERE project_id = %s AND conversation_id = %s
+                  AND status = %s AND created_at < %s
+                ORDER BY created_at DESC, run_id DESC
+                LIMIT %s
+                """,
+                (project_id, conversation_id, RunStatus.COMPLETED.value,
+                 _db_datetime(before_created_at), limit),
+            )
+            rows = cursor.fetchall()
+            return [
+                Run(
+                    run_id=row["run_id"], project_id=row["project_id"],
+                    conversation_id=row["conversation_id"], prompt=row["prompt"],
+                    context=_decode_json(row["context_json"]),
+                    status=RunStatus(row["status"]), result=row["result"],
+                    error=row["error"], created_at=_utc_datetime(row["created_at"]),
+                    started_at=_utc_datetime(row["started_at"]),
+                    finished_at=_utc_datetime(row["finished_at"]),
+                )
+                for row in reversed(rows)
+            ]
+        finally:
+            connection.close()
+
     def update_run(self, run: Run) -> Run:
         self.initialize()
         connection = self._connect()
@@ -158,6 +201,20 @@ class MySQLRunRepository:
             )
             connection.commit()
             return run
+        finally:
+            connection.close()
+
+    def update_context(self, run_id: str, context: list[dict[str, Any]]) -> None:
+        """保存本次运行真正注入 Agent 的初始上下文快照。"""
+        self.initialize()
+        connection = self._connect()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                "UPDATE agent_run SET context_json = %s WHERE run_id = %s",
+                (json.dumps(context, ensure_ascii=False), run_id),
+            )
+            connection.commit()
         finally:
             connection.close()
 

@@ -24,7 +24,9 @@ def create_app(
     repository = repository or create_run_repository(settings)
     run_service = run_service or RunService(
         repository,
-        CurrentAgentRuntime(settings),
+        # Runtime 和 RunService 共用同一个仓储，ContextBuilder 才能读取
+        # 当前项目/对话的历史，并把实际上下文快照保存回同一条 agent_run。
+        CurrentAgentRuntime(settings, repository),
     )
 
     app = FastAPI(

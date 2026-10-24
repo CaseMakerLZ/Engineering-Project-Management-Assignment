@@ -49,7 +49,14 @@ class RunService:
 
         try:
             # 调用 Agent Core 得到回答和过程消息。
-            runtime_result = await self.runtime.run(run.prompt, run.project_id, run.context)
+            runtime_result = await self.runtime.run(
+                run.prompt,
+                project_id=run.project_id,
+                context=run.context,
+                run_id=run.run_id,
+                conversation_id=run.conversation_id,
+                created_at=run.created_at,
+            )
             latest_run = self.repository.get_run(run_id)
             if latest_run is None or latest_run.status == RunStatus.CANCELLED:
                 return
