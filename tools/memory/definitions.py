@@ -21,7 +21,7 @@ def build_memory_tools(
     run_id: str,
 ) -> list[ToolDefinition]:
     """把运行边界绑定到工具实现，再交给模型填写业务参数。"""
-    return [
+    tools = [
         ToolDefinition(
             name="search_memory",
             description=(
@@ -42,17 +42,19 @@ def build_memory_tools(
             name="remember",
             description=(
                 "保存当前轮已经明确确认、未来可能需要复用的一条长期记忆。"
-                "memory_type 用于区分事实、偏好、决定、目标、约束和流程；"
                 "不要把普通过程消息、临时猜测或未经确认的内容写入长期记忆。"
-                "需要替代旧记忆时填写 supersedes_memory_id。"
+                "记忆在当前项目的各个对话间共享，下次运行会自动读取。"
+                "新建时省略 memory_id；修改已有记忆时填写上下文中对应的 memory_id，"
+                "并提交完整的新内容。未知 ID 会报错，不会新建。"
             ),
             args_model=RememberArgs,
             function=partial(
                 remember,
                 repository=repository,
                 project_id=project_id,
-                conversation_id=conversation_id,
                 source_run_id=run_id,
             ),
         ),
     ]
+    # 历史回溯仍以对话为边界；没有对话时只开放项目级 remember。
+    return tools if conversation_id is not None else tools[1:]

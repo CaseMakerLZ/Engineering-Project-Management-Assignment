@@ -111,7 +111,6 @@ def create_default_registry(
     if (
         memory_repository is not None
         and memory_project_id is not None
-        and memory_conversation_id is not None
         and memory_before_created_at is not None
         and memory_run_id is not None
     ):

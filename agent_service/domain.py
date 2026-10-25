@@ -37,15 +37,13 @@ class RunMessage(BaseModel):
 
 
 class MemoryRecord(BaseModel):
-    """一条可长期保存的结构化记忆；它不是一次运行的过程消息。它对应了agent_memory表"""
+    """agent_memory 中的一条项目长期记忆，不是运行过程消息。
+
+    同项目的不同对话共用这些记忆；source_run_id 仅供服务端追溯最后写入来源。
+    """
 
     memory_id: str
     project_id: str
-    conversation_id: str
-    memory_type: str
     content: str
     source_run_id: str
-    supersedes_memory_id: str | None = None
-    status: str
-    created_at: datetime
     updated_at: datetime

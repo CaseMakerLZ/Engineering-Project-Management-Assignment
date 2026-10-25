@@ -6,12 +6,12 @@
 本文件只负责数据库读写，不执行 Agent，也不决定模型应该记住什么：
     agent_run         一次运行的问题、结果、状态和初始上下文快照。
     agent_run_message 一次运行的过程消息，按运行内序号排列。
-    agent_memory      remember 工具明确保存的长期记忆，目前不自动注入上下文。
+    agent_memory      remember 明确保存的项目长期记忆，启动时由 ContextBuilder 读取。
 
 调用关系：
     RunService          -> create_run / get_run / update_run / append_messages
     CurrentAgentRuntime -> update_context
-    ContextBuilder      -> list_recent_completed_runs
+    ContextBuilder      -> list_recent_completed_runs / list_project_memories
     search_memory 工具  -> list_memory_runs / list_messages
     remember 工具       -> upsert_memory
 
@@ -118,11 +118,11 @@ class RunRepository(Protocol):
 
 
 class MemoryRepository(Protocol):
-    """记忆工具依赖的最小仓储接口。
+    """记忆工具依赖的最小仓储接口，也声明项目长期记忆读取能力。
 
     这不是一个单独的数据库对象。实际传入的对象仍然是
     ``SQLiteRunRepository`` 或 ``MySQLRunRepository``，这里只声明
-    ``search_memory`` 和 ``remember`` 所需的方法，避免把记忆能力混入
+    ``search_memory``、``remember`` 和长期记忆读取所需的方法，避免把记忆能力混入
     RunService 使用的 ``RunRepository`` 接口。
     """
 
@@ -147,14 +147,16 @@ class MemoryRepository(Protocol):
         *,
         memory_id: str,
         project_id: str,
-        conversation_id: str,
-        memory_type: str,
         content: str,
         source_run_id: str,
-        supersedes_memory_id: str | None,
         now: datetime,
+        create: bool,
     ) -> MemoryRecord:
-        """新增或更新长期记忆，供 remember 使用。"""
+        """remember 写入入口；create=True 仅新增，False 仅更新已有的同项目记录。"""
+        ...
+
+    def list_project_memories(self, project_id: str) -> list[MemoryRecord]:
+        """返回项目全部长期记忆，按更新时间、ID 正序；不按对话过滤或静默裁剪。"""
         ...
 
 
@@ -193,20 +195,12 @@ class MySQLRunRepository:
         CREATE TABLE IF NOT EXISTS agent_memory (
             memory_id VARCHAR(64) PRIMARY KEY,
             project_id VARCHAR(128) NOT NULL,
-            conversation_id VARCHAR(128) NOT NULL,
-            memory_type VARCHAR(32) NOT NULL,
             content TEXT NOT NULL,
             source_run_id VARCHAR(36) NOT NULL,
-            supersedes_memory_id VARCHAR(64),
-            status VARCHAR(16) NOT NULL,
-            created_at DATETIME(6) NOT NULL,
             updated_at DATETIME(6) NOT NULL,
-            KEY idx_agent_memory_scope_updated
-                (project_id, conversation_id, status, updated_at),
+            KEY idx_agent_memory_project_updated (project_id, updated_at, memory_id),
             CONSTRAINT fk_agent_memory_source_run FOREIGN KEY (source_run_id)
-                REFERENCES agent_run(run_id),
-            CONSTRAINT fk_agent_memory_supersedes FOREIGN KEY (supersedes_memory_id)
-                REFERENCES agent_memory(memory_id)
+                REFERENCES agent_run(run_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """,
     )
@@ -251,6 +245,15 @@ class MySQLRunRepository:
                 cursor = connection.cursor()
                 for statement in self._schema:
                     cursor.execute(statement)
+                # CREATE IF NOT EXISTS 不会升级旧表。MySQL DDL 隐式提交，
+                # 因此旧表迁移必须在停写时显式运行脚本，不能伪装成可回滚事务。
+                cursor.execute("SHOW COLUMNS FROM agent_memory")
+                columns = {row[0] for row in cursor.fetchall()}
+                if columns != {"memory_id", "project_id", "content", "source_run_id", "updated_at"}:
+                    raise RuntimeError(
+                        "agent_memory 仍是旧结构或结构不兼容；请停写并备份数据库，"
+                        "按 agent_service/migrations/project_memory_mysql.sql 迁移后重启"
+                    )
                 connection.commit()
                 self._initialized = True
             finally:
@@ -416,123 +419,88 @@ class MySQLRunRepository:
         finally:
             connection.close()
 
+    def list_project_memories(self, project_id: str) -> list[MemoryRecord]:
+        """读取同项目全部长期记忆；项目索引负责缩小范围，不混入其他项目内容。"""
+        self.initialize()
+        connection = self._connect()
+        try:
+            cursor = connection.cursor(dictionary=True)
+            cursor.execute(
+                "SELECT memory_id, project_id, content, source_run_id, updated_at "
+                "FROM agent_memory WHERE project_id = %s ORDER BY updated_at, memory_id",
+                (project_id,),
+            )
+            return [
+                MemoryRecord(
+                    memory_id=row["memory_id"], project_id=row["project_id"],
+                    content=row["content"], source_run_id=row["source_run_id"],
+                    updated_at=_utc_datetime(row["updated_at"]),
+                )
+                for row in cursor.fetchall()
+            ]
+        finally:
+            connection.close()
+
     def upsert_memory(
         self,
         *,
         memory_id: str,
         project_id: str,
-        conversation_id: str,
-        memory_type: str,
         content: str,
         source_run_id: str,
-        supersedes_memory_id: str | None,
         now: datetime,
+        create: bool,
     ) -> MemoryRecord:
-        """原子地新增或更新一条长期记忆，并标记被替代的旧记忆。
+        """在短事务内新增或原地更新项目记忆，不保存状态和历史版本。
 
-        调用方是 remember；project_id/conversation_id/source_run_id 由运行时绑定。
-        memory_id 不存在则新增，存在则更新；保留原 created_at，更新 updated_at，
-        写入后的状态为 ACTIVE。now 由调用方提供，同时用于相关记录的更新时间。
-        可用 supersedes_memory_id 指明旧记忆，将旧记录改为 SUPERSEDED，不删除它。
-        来源 Run 必须存在且同项目同对话；更新/替代也不能跨范围或替代自己。
-        归属错误抛 ValueError；数据库异常向上抛，工具层负责转成工具错误。
-        任一步失败整笔事务回滚；成功返回写入后的 MemoryRecord，不负责自动回忆。
+        create 由服务端根据模型是否传 ID 决定；新增 ID 冲突时失败，
+        更新未知/其他项目 ID 时失败，不能把错误 ID 当成新记忆。
+        来源 Run 必须存在且属于当前项目；跨对话更新同项目记忆是允许的。
+        行锁防止写入交错；同时更新同一条时，以最后提交的完整内容为准。
+        当前不做乐观版本校验、自动合并或死锁自动重试。
         """
-        if supersedes_memory_id == memory_id:
-            raise ValueError("一条记忆不能替代自己")
         self.initialize()
         connection = self._connect()
         try:
-            # 校验来源、标记旧记忆、写新内容必须一起成功，不能只保存一半。
             connection.start_transaction()
             cursor = connection.cursor(dictionary=True)
             cursor.execute(
-                "SELECT project_id, conversation_id FROM agent_run WHERE run_id = %s FOR UPDATE",
+                "SELECT project_id FROM agent_run WHERE run_id = %s FOR UPDATE",
                 (source_run_id,),
             )
-            # FOR UPDATE 在事务内锁定读取的记录；当前实现没有死锁自动重试。
             source_run = cursor.fetchone()
             if source_run is None:
                 raise ValueError("source_run_id 对应的运行不存在")
-            if (
-                source_run["project_id"] != project_id
-                or source_run["conversation_id"] != conversation_id
-            ):
-                raise ValueError("source_run_id 不属于当前项目或对话")
-            # 先处理“替代哪条旧记忆”；这与“更新当前 memory_id”是两件事。
-            old_memory = None
-            if supersedes_memory_id is not None:
-                cursor.execute(
-                    "SELECT * FROM agent_memory WHERE memory_id = %s FOR UPDATE",
-                    (supersedes_memory_id,),
-                )
-                old_memory = cursor.fetchone()
-                if old_memory is None:
-                    raise ValueError("supersedes_memory_id 对应的记忆不存在")
-                if (
-                    old_memory["project_id"] != project_id
-                    or old_memory["conversation_id"] != conversation_id
-                ):
-                    raise ValueError("只能替代同项目同对话的记忆")
-                cursor.execute(
-                    "UPDATE agent_memory SET status = %s, updated_at = %s WHERE memory_id = %s",
-                    ("SUPERSEDED", _db_datetime(now), supersedes_memory_id),
-                )
+            if source_run["project_id"] != project_id:
+                raise ValueError("source_run_id 不属于当前项目")
 
-            cursor.execute(
-                "SELECT * FROM agent_memory WHERE memory_id = %s FOR UPDATE",
-                (memory_id,),
-            )
-            current = cursor.fetchone()
-            if current is not None and (
-                current["project_id"] != project_id
-                or current["conversation_id"] != conversation_id
-            ):
-                raise ValueError("memory_id 不属于当前项目或对话")
-
-            # 再决定新增还是原地更新，旧记录的创建时间不会随更新重写。
-            if current is None:
-                created_at = now
+            if create:
+                # 不使用 ON DUPLICATE KEY UPDATE，避免极小概率 ID 冲突覆盖旧记忆。
                 cursor.execute(
-                    """
-                    INSERT INTO agent_memory
-                    (memory_id, project_id, conversation_id, memory_type, content,
-                     source_run_id, supersedes_memory_id, status, created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        memory_id, project_id, conversation_id, memory_type, content,
-                        source_run_id, supersedes_memory_id, "ACTIVE",
-                        _db_datetime(created_at), _db_datetime(now),
-                    ),
+                    "INSERT INTO agent_memory "
+                    "(memory_id, project_id, content, source_run_id, updated_at) "
+                    "VALUES (%s, %s, %s, %s, %s)",
+                    (memory_id, project_id, content, source_run_id, _db_datetime(now)),
                 )
             else:
-                created_at = _utc_datetime(current["created_at"]) or now
                 cursor.execute(
-                    """
-                    UPDATE agent_memory
-                    SET memory_type = %s, content = %s, source_run_id = %s,
-                        supersedes_memory_id = %s, status = %s, updated_at = %s
-                    WHERE memory_id = %s
-                    """,
-                    (
-                        memory_type, content, source_run_id, supersedes_memory_id,
-                        "ACTIVE", _db_datetime(now), memory_id,
-                    ),
+                    "SELECT memory_id FROM agent_memory "
+                    "WHERE memory_id = %s AND project_id = %s FOR UPDATE",
+                    (memory_id, project_id),
                 )
-            connection.commit()
-            return MemoryRecord(
-                memory_id=memory_id,
-                project_id=project_id,
-                conversation_id=conversation_id,
-                memory_type=memory_type,
-                content=content,
-                source_run_id=source_run_id,
-                supersedes_memory_id=supersedes_memory_id,
-                status="ACTIVE",
-                created_at=created_at,
-                updated_at=now,
+                if cursor.fetchone() is None:
+                    raise ValueError("memory_id 不存在或不属于当前项目")
+                cursor.execute(
+                    "UPDATE agent_memory SET content = %s, source_run_id = %s, updated_at = %s "
+                    "WHERE memory_id = %s AND project_id = %s",
+                    (content, source_run_id, _db_datetime(now), memory_id, project_id),
+                )
+            record = MemoryRecord(
+                memory_id=memory_id, project_id=project_id, content=content,
+                source_run_id=source_run_id, updated_at=now,
             )
+            connection.commit()
+            return record
         except Exception:
             connection.rollback()
             raise
@@ -688,21 +656,15 @@ class SQLiteRunRepository:
         CREATE TABLE IF NOT EXISTS agent_memory (
             memory_id TEXT PRIMARY KEY,
             project_id TEXT NOT NULL,
-            conversation_id TEXT NOT NULL,
-            memory_type TEXT NOT NULL,
             content TEXT NOT NULL,
             source_run_id TEXT NOT NULL,
-            supersedes_memory_id TEXT,
-            status TEXT NOT NULL,
-            created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
-            FOREIGN KEY(source_run_id) REFERENCES agent_run(run_id),
-            FOREIGN KEY(supersedes_memory_id) REFERENCES agent_memory(memory_id)
+            FOREIGN KEY(source_run_id) REFERENCES agent_run(run_id)
         )
         """,
         """
-        CREATE INDEX IF NOT EXISTS idx_agent_memory_scope_updated
-        ON agent_memory(project_id, conversation_id, status, updated_at)
+        CREATE INDEX IF NOT EXISTS idx_agent_memory_project_updated
+        ON agent_memory(project_id, updated_at, memory_id)
         """,
     )
 
@@ -754,11 +716,11 @@ class SQLiteRunRepository:
         return self._connection
 
     def initialize(self) -> None:
-        """幂等创建运行记录表和过程消息表。
+        """幂等创建数据表，并兼容两种已经使用过的本地结构。
 
-        还会创建长期记忆表和索引；这里的“幂等”是重复调用不清空或重复建表。
-        兼容旧库时只补缺失的 context_json 列，不是通用数据库版本迁移器。
-        _initialized 只是本实例的完成标记；锁内再次检查，避免线程重复初始化。
+        旧 agent_run 补 context_json。旧 agent_memory 原表保留为
+        agent_memory_legacy_backup，新表仅复制原 ACTIVE 记忆；失败全部回滚。
+        这是定向升级，不是任意结构的迁移器；遇到未知结构直接报错。
         """
         if self._initialized:
             return
@@ -767,21 +729,58 @@ class SQLiteRunRepository:
             if self._initialized:
                 return
             connection = self._connect()
-            # 兼容已经由 JSONL 版本创建的 agent_run：它缺少 context_json，
-            # 但仍然可以通过一次本地结构升级继续使用同一个 SQLite 文件。
-            connection.execute(self._schema[0])
-            columns = {
-                row[1]
-                for row in connection.execute("PRAGMA table_info(agent_run)").fetchall()
-            }
-            if "context_json" not in columns:
-                connection.execute(
-                    "ALTER TABLE agent_run ADD COLUMN context_json TEXT NOT NULL DEFAULT '[]'"
-                )
-            connection.execute(self._schema[1])
-            for statement in self._schema[2:]:
-                connection.execute(statement)
-            self._initialized = True
+            try:
+                # 先取得写锁再检查结构，其他仓储实例不会并行迁移同一个文件。
+                connection.execute("BEGIN IMMEDIATE")
+                # 兼容已经由 JSONL 版本创建的 agent_run：它缺少 context_json，
+                # 但仍然可以通过一次本地结构升级继续使用同一个 SQLite 文件。
+                connection.execute(self._schema[0])
+                columns = {
+                    row[1]
+                    for row in connection.execute("PRAGMA table_info(agent_run)").fetchall()
+                }
+                if "context_json" not in columns:
+                    connection.execute(
+                        "ALTER TABLE agent_run ADD COLUMN context_json TEXT NOT NULL DEFAULT '[]'"
+                    )
+                connection.execute(self._schema[1])
+                memory_columns = {
+                    row[1]
+                    for row in connection.execute("PRAGMA table_info(agent_memory)").fetchall()
+                }
+                expected = {"memory_id", "project_id", "content", "source_run_id", "updated_at"}
+                legacy = expected | {
+                    "conversation_id", "memory_type", "supersedes_memory_id", "status", "created_at"
+                }
+                if memory_columns == legacy:
+                    invalid_status = connection.execute(
+                        "SELECT 1 FROM agent_memory WHERE status NOT IN ('ACTIVE', 'SUPERSEDED') "
+                        "OR status IS NULL LIMIT 1"
+                    ).fetchone()
+                    if invalid_status is not None:
+                        raise RuntimeError("旧 agent_memory 存在未知状态，请检查后再迁移")
+                    # 不删除原表：保留全部旧记录，避免不可恢复地丢失旧记忆。
+                    # 备份表已存在时 ALTER 会失败，整笔回滚，不覆盖既有备份。
+                    connection.execute(
+                        "ALTER TABLE agent_memory RENAME TO agent_memory_legacy_backup"
+                    )
+                    connection.execute(self._schema[2])
+                    connection.execute(
+                        "INSERT INTO agent_memory "
+                        "(memory_id, project_id, content, source_run_id, updated_at) "
+                        "SELECT memory_id, project_id, content, source_run_id, updated_at "
+                        "FROM agent_memory_legacy_backup WHERE status = 'ACTIVE'"
+                    )
+                elif memory_columns and memory_columns != expected:
+                    raise RuntimeError("agent_memory 结构不兼容，请检查后再迁移")
+                else:
+                    connection.execute(self._schema[2])
+                connection.execute(self._schema[3])
+                connection.commit()
+                self._initialized = True
+            except Exception:
+                connection.rollback()
+                raise
 
     def close(self) -> None:
         """关闭当前仓储复用的连接；关闭后再次使用会按需重新初始化。
@@ -925,121 +924,81 @@ class SQLiteRunRepository:
             ).fetchall()
             return [_memory_run_from_row(row) for row in reversed(rows)]
 
+    def list_project_memories(self, project_id: str) -> list[MemoryRecord]:
+        """读取同项目全部长期记忆，按更新时间、ID 正序，不依赖对话 ID。"""
+        self.initialize()
+        with self._connection_lock:
+            rows = self._connect().execute(
+                "SELECT memory_id, project_id, content, source_run_id, updated_at "
+                "FROM agent_memory WHERE project_id = ? ORDER BY updated_at, memory_id",
+                (project_id,),
+            ).fetchall()
+            return [
+                MemoryRecord(
+                    memory_id=row["memory_id"], project_id=row["project_id"],
+                    content=row["content"], source_run_id=row["source_run_id"],
+                    updated_at=_from_sqlite_datetime(row["updated_at"]),
+                )
+                for row in rows
+            ]
+
     def upsert_memory(
         self,
         *,
         memory_id: str,
         project_id: str,
-        conversation_id: str,
-        memory_type: str,
         content: str,
         source_run_id: str,
-        supersedes_memory_id: str | None,
         now: datetime,
+        create: bool,
     ) -> MemoryRecord:
-        """原子地新增或更新一条长期记忆，并标记被替代的旧记忆。
+        """新增或原地更新项目记忆；严格区分创建与更新，不保存旧版本。
 
-        由 remember 调用，运行时绑定项目、对话和来源 Run；内容由工具参数提供。
-        memory_id 不存在则新增，存在则更新；保留原 created_at，以 now 更新
-        updated_at，写入状态为 ACTIVE。supersedes_memory_id 可指定被替代的旧记录，
-        旧记录改为 SUPERSEDED 而非删除。
-        来源 Run 必须存在且同项目同对话；更新/替代不能跨范围或替代自己。
-        归属错误抛 ValueError，数据库错误向上抛；工具层将它们转成工具失败结果。
-        整笔写入成功或回滚，成功返回 MemoryRecord；不负责下一轮自动读取。
+        BEGIN IMMEDIATE 保证来源校验、已有记录校验和写入一起成功或回滚。
+        更新范围只限定项目，同项目不同对话可以更新；未知 ID 不转为新增。
+        多个写者串行提交，同一条记忆以最后提交的完整内容为准，不自动合并。
         """
-        if supersedes_memory_id == memory_id:
-            raise ValueError("一条记忆不能替代自己")
         self.initialize()
         with self._connection_lock:
             connection = self._connect()
             try:
                 connection.execute("BEGIN IMMEDIATE")
-                # 先确认记忆确实来自当前项目、当前对话中存在的一次运行。
                 source_run = connection.execute(
-                    "SELECT project_id, conversation_id FROM agent_run WHERE run_id = ?",
+                    "SELECT project_id FROM agent_run WHERE run_id = ?",
                     (source_run_id,),
                 ).fetchone()
                 if source_run is None:
                     raise ValueError("source_run_id 对应的运行不存在")
-                if (
-                    source_run["project_id"] != project_id
-                    or source_run["conversation_id"] != conversation_id
-                ):
-                    raise ValueError("source_run_id 不属于当前项目或对话")
-                # “替代旧记忆”与“更新当前 ID”分开校验，但在同一事务里提交。
-                old_memory = None
-                if supersedes_memory_id is not None:
-                    old_memory = connection.execute(
-                        "SELECT * FROM agent_memory WHERE memory_id = ?",
-                        (supersedes_memory_id,),
-                    ).fetchone()
-                    if old_memory is None:
-                        raise ValueError("supersedes_memory_id 对应的记忆不存在")
-                    if (
-                        old_memory["project_id"] != project_id
-                        or old_memory["conversation_id"] != conversation_id
-                    ):
-                        raise ValueError("只能替代同项目同对话的记忆")
-                    connection.execute(
-                        "UPDATE agent_memory SET status = ?, updated_at = ? WHERE memory_id = ?",
-                        ("SUPERSEDED", _to_sqlite_datetime(now), supersedes_memory_id),
-                    )
+                if source_run["project_id"] != project_id:
+                    raise ValueError("source_run_id 不属于当前项目")
 
-                current = connection.execute(
-                    "SELECT * FROM agent_memory WHERE memory_id = ?",
-                    (memory_id,),
-                ).fetchone()
-                if current is not None and (
-                    current["project_id"] != project_id
-                    or current["conversation_id"] != conversation_id
-                ):
-                    raise ValueError("memory_id 不属于当前项目或对话")
-
-                # 新增才设置 created_at；更新沿用旧值，避免丢失最初保存时间。
-                if current is None:
-                    created_at = now
+                if create:
+                    # 普通 INSERT 在 ID 冲突时失败，不覆盖其他记忆。
                     connection.execute(
-                        """
-                        INSERT INTO agent_memory
-                        (memory_id, project_id, conversation_id, memory_type, content,
-                         source_run_id, supersedes_memory_id, status, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            memory_id, project_id, conversation_id, memory_type, content,
-                            source_run_id, supersedes_memory_id, "ACTIVE",
-                            _to_sqlite_datetime(created_at), _to_sqlite_datetime(now),
-                        ),
+                        "INSERT INTO agent_memory "
+                        "(memory_id, project_id, content, source_run_id, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (memory_id, project_id, content, source_run_id, _to_sqlite_datetime(now)),
                     )
                 else:
-                    created_at = _from_sqlite_datetime(current["created_at"]) or now
+                    existing = connection.execute(
+                        "SELECT memory_id FROM agent_memory WHERE memory_id = ? AND project_id = ?",
+                        (memory_id, project_id),
+                    ).fetchone()
+                    if existing is None:
+                        raise ValueError("memory_id 不存在或不属于当前项目")
                     connection.execute(
-                        """
-                        UPDATE agent_memory
-                        SET memory_type = ?, content = ?, source_run_id = ?,
-                            supersedes_memory_id = ?, status = ?, updated_at = ?
-                        WHERE memory_id = ?
-                        """,
-                        (
-                            memory_type, content, source_run_id, supersedes_memory_id,
-                            "ACTIVE", _to_sqlite_datetime(now), memory_id,
-                        ),
+                        "UPDATE agent_memory SET content = ?, source_run_id = ?, updated_at = ? "
+                        "WHERE memory_id = ? AND project_id = ?",
+                        (content, source_run_id, _to_sqlite_datetime(now), memory_id, project_id),
                     )
-                connection.commit()
-                return MemoryRecord(
-                    memory_id=memory_id,
-                    project_id=project_id,
-                    conversation_id=conversation_id,
-                    memory_type=memory_type,
-                    content=content,
-                    source_run_id=source_run_id,
-                    supersedes_memory_id=supersedes_memory_id,
-                    status="ACTIVE",
-                    created_at=created_at,
-                    updated_at=now,
+                record = MemoryRecord(
+                    memory_id=memory_id, project_id=project_id, content=content,
+                    source_run_id=source_run_id, updated_at=now,
                 )
+                connection.commit()
+                return record
             except Exception:
-                # 即使旧记忆已被标记，后续失败也要恢复它，不能只完成半笔操作。
                 connection.rollback()
                 raise
 

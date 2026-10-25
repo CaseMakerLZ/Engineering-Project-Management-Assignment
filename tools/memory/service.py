@@ -1,4 +1,4 @@
-"""search_memory 的查询和结果裁剪逻辑。"""
+"""search_memory 的历史回溯与结果裁剪，以及 remember 的项目长期记忆写入。"""
 
 from datetime import datetime, timedelta, timezone
 import json
@@ -122,33 +122,22 @@ def search_memory(
 
 def remember(
     *,
-    operation: str = "UPSERT",
     memory_id: str | None = None,
-    memory_type: str,
     content: str,
-    supersedes_memory_id: str | None = None,
     repository: MemoryRepository,
     project_id: str,
-    conversation_id: str | None,
     source_run_id: str,
 ) -> RememberOutput:
     """保存当前运行明确提出的一条长期记忆。
 
-    项目、对话和来源运行由服务端绑定；模型只能提交记忆本身及其更新关系。
+    项目和来源运行由服务端绑定；模型只提交内容，以及更新时需要的已有 ID。
+    不传 ID 就新建，传 ID 只能原地更新同项目记忆，不创建替代记录或版本链。
     该函数不会调用 LLM，也不会从整段历史中自动提取内容。
     """
-    if conversation_id is None:
-        raise MemoryToolError(
-            MemoryErrorCode.CONFIGURATION_ERROR,
-            "当前运行没有 conversation_id，不能保存对话范围内的长期记忆",
-        )
     try:
         validated_args = RememberArgs(
-            operation=operation,
             memory_id=memory_id,
-            memory_type=memory_type,
             content=content,
-            supersedes_memory_id=supersedes_memory_id,
         )
     except Exception as exc:
         raise MemoryToolError(
@@ -163,12 +152,10 @@ def remember(
         record = repository.upsert_memory(
             memory_id=effective_memory_id,
             project_id=project_id,
-            conversation_id=conversation_id,
-            memory_type=validated_args.memory_type,
             content=validated_args.content,
             source_run_id=source_run_id,
-            supersedes_memory_id=validated_args.supersedes_memory_id,
             now=now,
+            create=validated_args.memory_id is None,
         )
     except MemoryToolError:
         raise
@@ -185,15 +172,8 @@ def remember(
             cause=exc,
         ) from exc
     return RememberOutput(
-        operation=validated_args.operation,
         memory_id=record.memory_id,
-        memory_type=record.memory_type,
         content=record.content,
-        status=record.status,
-        source_run_id=record.source_run_id,
-        superseded_memory_id=validated_args.supersedes_memory_id,
-        created_at=record.created_at,
-        updated_at=record.updated_at,
     )
 
 

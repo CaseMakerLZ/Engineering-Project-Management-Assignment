@@ -6,9 +6,7 @@
 
 from datetime import datetime
 
-from typing import Literal
-
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class MemoryTimeRange(BaseModel):
@@ -56,23 +54,15 @@ class SearchMemoryArgs(BaseModel):
 class RememberArgs(BaseModel):
     """remember 的显式长期记忆写入参数。"""
 
-    operation: Literal["UPSERT"] = Field(
-        default="UPSERT", description="当前版本只支持新增或更新长期记忆"
-    )
+    model_config = ConfigDict(extra="forbid")
+
     memory_id: str | None = Field(
         default=None, min_length=1, max_length=64,
         description="更新已有记忆时填写；新建记忆留空",
     )
-    memory_type: Literal[
-        "FACT", "PREFERENCE", "DECISION", "GOAL", "CONSTRAINT", "PROCEDURE", "PROGRESS"
-    ] = Field(description="记忆的业务类型")
     content: str = Field(
         min_length=1, max_length=2_000,
         description="需要长期保留的明确事实、偏好、决定、目标或约束",
-    )
-    supersedes_memory_id: str | None = Field(
-        default=None, min_length=1, max_length=64,
-        description="本条记忆替代的旧记忆 ID；不替代时留空",
     )
 
     @model_validator(mode="after")
@@ -81,9 +71,7 @@ class RememberArgs(BaseModel):
         if not self.content:
             raise ValueError("content 不能为空")
         if self.memory_id is not None:
-            self.memory_id = self.memory_id.strip() or None
-        if self.supersedes_memory_id is not None:
-            self.supersedes_memory_id = self.supersedes_memory_id.strip() or None
-        if self.memory_id is not None and self.memory_id == self.supersedes_memory_id:
-            raise ValueError("memory_id 不能替代自己")
+            self.memory_id = self.memory_id.strip()
+            if not self.memory_id:
+                raise ValueError("memory_id 不能为空白；新建时请省略或传 null")
         return self
