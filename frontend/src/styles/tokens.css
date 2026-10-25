@@ -1,0 +1,45 @@
+:root {
+  color-scheme: light;
+  --ink: #17181d;
+  --ink-soft: #3c3e48;
+  --muted: #737580;
+  --muted-light: #9698a1;
+  --paper: #f4f1ea;
+  --paper-deep: #ece7dc;
+  --surface: #fffdfa;
+  --surface-soft: #faf7f1;
+  --surface-raised: #ffffff;
+  --line: #e5dfd3;
+  --line-strong: #d5ccbc;
+  --accent: #5c4df4;
+  --accent-deep: #4435dd;
+  --accent-soft: #ece9ff;
+  --accent-wash: #f5f3ff;
+  --lime: #b8ff6a;
+  --mint: #0b9a7d;
+  --mint-soft: #e8f8f2;
+  --danger: #cf4555;
+  --danger-soft: #fff0f1;
+  --amber: #b97816;
+  --amber-soft: #fff7e8;
+  --sidebar: #171821;
+  --sidebar-soft: #1e1f2b;
+  --sidebar-raised: #242531;
+  --sidebar-text: #f5f2eb;
+  --sidebar-muted: #9698a5;
+  --sidebar-line: rgba(255, 255, 255, 0.08);
+  --radius-xs: 8px;
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-xl: 28px;
+  --shadow-xs: 0 1px 2px rgba(23, 24, 29, 0.04);
+  --shadow-sm: 0 8px 24px rgba(31, 29, 24, 0.06);
+  --shadow-md: 0 18px 50px rgba(31, 29, 24, 0.09);
+  --shadow-lg: 0 30px 80px rgba(23, 24, 29, 0.16);
+  --font-sans: "Segoe UI Variable", "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", sans-serif;
+  --font-mono: "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --sidebar-width: 264px;
+  --pane-width: 278px;
+}
