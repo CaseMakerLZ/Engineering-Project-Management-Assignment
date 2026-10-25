@@ -9,11 +9,11 @@ public enum ErrorCode {
 
     //通用请求错误域（10000-19999）
     INVALID_ARGUMENT(10001,"请求参数不合法",HttpStatus.BAD_REQUEST),
+    AUTH_TOKEN_INVALID(10002,"未登录或令牌已失效",HttpStatus.UNAUTHORIZED),
 
     //用户与权限域(20000–29999)
-    //TODO: 要等用户业务开始写的时候再同步推进,这里先给出几个基本都会用到的
-    USER_NOT_FOUND(20001,"用户名已存在",HttpStatus.NOT_FOUND),
-    PASSWORD_ERROR(20002,"密码或用户名错误",HttpStatus.UNAUTHORIZED),
+    USERNAME_ALREADY_EXISTS(20001,"用户名已存在",HttpStatus.CONFLICT),
+    BAD_CREDENTIALS(20002,"用户名或密码错误",HttpStatus.UNAUTHORIZED),
 
     //Agent任务域（30000-39999）
     AGENT_RUN_NOT_FOUND(30001,"Agent Run 不存在",HttpStatus.NOT_FOUND),
@@ -30,7 +30,7 @@ public enum ErrorCode {
     AGENT_SERVICE_RESPONSE_ERROR(40004,"Agent 服务返回异常",HttpStatus.BAD_GATEWAY),
 
     //其他未知异常域
-    INTERNAL_SERVER_ERROR(90001,"系统内部错误",HttpStatus.INTERNAL_SERVER_ERROR);
+    INTERNAL_SERVER_ERROR(50000,"系统内部错误",HttpStatus.INTERNAL_SERVER_ERROR);
 
     private final int code;
     private final String message;
