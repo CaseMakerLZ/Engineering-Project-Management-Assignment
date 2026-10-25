@@ -5,6 +5,8 @@ from .domain import Run, RunStatus
 from .repository import RunRepository
 from .runtime import AgentRuntime
 from .schemas import CreateRunRequest
+from agent.message import AgentMessage, MessageType
+from llm.mapper import reasoning_display_content
 
 
 def _now() -> datetime:
@@ -64,7 +66,7 @@ class RunService:
             run = latest_run
             self.repository.append_messages(
                 run_id,
-                [(message.type.value, message.content) for message in runtime_result.messages],
+                [_message_for_storage(message) for message in runtime_result.messages],
             )
             run.status = RunStatus.COMPLETED
             run.result = runtime_result.result
@@ -92,3 +94,16 @@ class RunService:
         run.status = RunStatus.CANCELLED
         run.finished_at = _now()
         return self.repository.update_run(run)
+
+
+def _message_for_storage(message: AgentMessage) -> tuple[str, object]:
+    """reasoning 同时保存原始项与可读文本，其余消息保持原有格式。"""
+    if message.type != MessageType.REASONING:
+        return message.type.value, message.content
+
+    readable_text, display_type = reasoning_display_content(message.content)
+    return message.type.value, {
+        "provider_item": message.content,
+        "display_text": readable_text,
+        "display_type": display_type,
+    }

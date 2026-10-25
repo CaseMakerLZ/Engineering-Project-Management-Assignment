@@ -8,6 +8,8 @@ class MessageType(str,Enum):
     PROJECT_INSTRUCTIONS = "project_instructions"
     USER = "user"
     ASSISTANT = "assistant"
+    # 模型返回的 reasoning 项保留原始结构，供本轮后续模型调用原样回传。
+    REASONING = "reasoning"
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
 

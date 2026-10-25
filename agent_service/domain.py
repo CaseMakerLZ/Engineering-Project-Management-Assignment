@@ -34,3 +34,18 @@ class RunMessage(BaseModel):
     message_type: str
     content: dict[str, Any] | str | None
     created_at: datetime
+
+
+class MemoryRecord(BaseModel):
+    """一条可长期保存的结构化记忆；它不是一次运行的过程消息。它对应了agent_memory表"""
+
+    memory_id: str
+    project_id: str
+    conversation_id: str
+    memory_type: str
+    content: str
+    source_run_id: str
+    supersedes_memory_id: str | None = None
+    status: str
+    created_at: datetime
+    updated_at: datetime

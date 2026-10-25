@@ -14,6 +14,11 @@ def response_output_to_messages(output: list[Any]) ->list[AgentMessage]:
                     content=item_content
                 )
             )
+        elif item.type == "reasoning":
+            # 不能只保留可读文字：模型续接工具调用时还需要原始 reasoning 项。
+            messages.append(
+                AgentMessage(type=MessageType.REASONING, content=item_content)
+            )
         elif item.type == "function_call":
             messages.append(
                 AgentMessage(
@@ -21,9 +26,35 @@ def response_output_to_messages(output: list[Any]) ->list[AgentMessage]:
                     content=item_content
                 )
             )
-        #到这截止，暂不考虑其他type情况
+        # 其他未识别的输出类型仍待单独设计，不在这里冒充普通消息。
 
     return messages
+
+
+def reasoning_display_content(item: dict[str, Any]) -> tuple[str | None, str | None]:
+    """提取服务商明确返回的可读文本；不尝试解密或伪造内部推理。
+
+    OpenAI 风格的 summary 优先作为“思考摘要”；部分兼容服务会直接返回
+    content[].reasoning_text，单独标记为“可见推理文本”。两者语义不同。
+    """
+    for field, part_type, display_type in (
+        ("summary", "summary_text", "summary"),
+        ("content", "reasoning_text", "reasoning_text"),
+    ):
+        parts = item.get(field) or []
+        if not isinstance(parts, list):
+            continue
+        texts = [
+            part["text"]
+            for part in parts
+            if isinstance(part, dict)
+            and part.get("type") == part_type
+            and isinstance(part.get("text"), str)
+            and part["text"].strip()
+        ]
+        if texts:
+            return "\n\n".join(texts), display_type
+    return None, None
 
 def messages_to_provider_input(messages: list[AgentMessage]) -> list[Any]:
     '''
@@ -42,6 +73,10 @@ def messages_to_provider_input(messages: list[AgentMessage]) -> list[Any]:
     MessageType.ASSISTANT
         ↓
     Responses API assistant message
+    ===============================
+    MessageType.REASONING
+        ↓
+    Responses API 原始 reasoning item
     '''
     result: list[Any] = []
     for message in messages:
@@ -78,6 +113,9 @@ def messages_to_provider_input(messages: list[AgentMessage]) -> list[Any]:
                 result.append({"role": "assistant", "content": message.content})
             else:
                 result.append(message.content)
+        elif message.type == MessageType.REASONING:
+            # 原样回传 provider item，保留 id、summary、content 和加密状态。
+            result.append(message.content)
         elif message.type == MessageType.TOOL_CALL:
             result.append(message.content)
         elif message.type == MessageType.TOOL_RESULT:

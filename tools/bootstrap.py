@@ -18,6 +18,7 @@ import threading
 
 from tools.filesystem.definitions import build_filesystem_tools
 from tools.web.definitions import build_web_tools
+from tools.memory.definitions import build_memory_tools
 from tools.terminal.definitions import build_terminal_tools
 from tools.terminal.service import TerminalAuthorizer, DEFAULT_TIMEOUT_SECONDS, DEFAULT_MAX_OUTPUT_BYTES
 from tools.registry import ToolRegistry
@@ -41,6 +42,11 @@ def create_default_registry(
     local_terminal_max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
     local_terminal_concurrency_limit: threading.Semaphore | None = None,
     local_terminal_cancel_event: threading.Event | None = None,
+    memory_repository=None,
+    memory_project_id: str | None = None,
+    memory_conversation_id: str | None = None,
+    memory_before_created_at=None,
+    memory_run_id: str | None = None,
 ) -> ToolRegistry:
     """创建绑定到一个已经确定的项目目录的工具注册表。
 
@@ -98,6 +104,23 @@ def create_default_registry(
             max_output_bytes=local_terminal_max_output_bytes,
             concurrency_limit=local_terminal_concurrency_limit,
             cancel_event=local_terminal_cancel_event,
+        ):
+            registry.register(tool)
+    # 只有正式运行链路提供仓储和当前运行边界时才装配记忆工具；
+    # 普通工具测试和独立 Agent 调试不会凭空暴露一个无法查询的工具。
+    if (
+        memory_repository is not None
+        and memory_project_id is not None
+        and memory_conversation_id is not None
+        and memory_before_created_at is not None
+        and memory_run_id is not None
+    ):
+        for tool in build_memory_tools(
+            repository=memory_repository,
+            project_id=memory_project_id,
+            conversation_id=memory_conversation_id,
+            before_created_at=memory_before_created_at,
+            run_id=memory_run_id,
         ):
             registry.register(tool)
     return registry

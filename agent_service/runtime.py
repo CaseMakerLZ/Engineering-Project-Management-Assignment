@@ -157,6 +157,11 @@ class CurrentAgentRuntime:
         registry = create_default_registry(
             project_root=project_root,
             web_api_key=self.settings.web_api_key,
+            memory_repository=self.repository,
+            memory_project_id=project_id,
+            memory_conversation_id=conversation_id,
+            memory_before_created_at=created_at,
+            memory_run_id=run_id,
         )
         executor = ToolExecutor(registry)
         loop = AgentLoop(llm, registry, executor)
@@ -225,6 +230,7 @@ def _message_to_context(message: AgentMessage) -> dict[str, Any]:
         MessageType.PROJECT_INSTRUCTIONS: "developer",
         MessageType.USER: "user",
         MessageType.ASSISTANT: "assistant",
+        MessageType.REASONING: "reasoning",
         MessageType.TOOL_CALL: "tool_call",
         MessageType.TOOL_RESULT: "tool_result",
     }

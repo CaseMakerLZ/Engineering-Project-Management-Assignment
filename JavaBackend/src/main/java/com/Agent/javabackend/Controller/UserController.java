@@ -6,10 +6,10 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController("/api/auth")
 public class UserController {
-    @PostMapping("/register")
-    public Result<User> register(){
+    // @PostMapping("/register")
+    // public Result<User> register(){
 
-        return
-    }
+    //     return
+    // }
 
 }
