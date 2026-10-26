@@ -7,7 +7,7 @@ spring:
 
 server:
   # Java 后端对外监听的端口；Python Agent Service 默认监听 8000。
-  port: ${SERVER_PORT:8081}
+  port: ${SERVER_PORT:8080}
 
 agent-service:
   # Java → Python Agent Service 的内部 HTTP 地址。
