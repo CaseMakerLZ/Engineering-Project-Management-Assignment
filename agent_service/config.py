@@ -1,5 +1,5 @@
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -32,11 +32,6 @@ class Settings:
     sqlite_database_path: str = "data/agent.sqlite3"
     internal_token: str | None = None
     max_prompt_length: int = 20_000
-    # 兼容旧项目的 TOML 映射；新项目优先从共享 SQLite 的 project.local_path 读取。
-    local_projects: dict[str, str] = field(default_factory=dict)
-    # 兼容旧的 Settings 构造方式；新的本地配置使用 local_projects。
-    local_project_id: str | None = None
-    local_project_root: str | None = None
     # 云端使用受控父目录，项目目录由 project_id 选择。
     workspace_root: str = "."
     execution_mode: str = "local"
@@ -62,19 +57,10 @@ class Settings:
         storage = _section(toml_values, "storage")
         runtime = _section(toml_values, "runtime")
         cloud = _section(toml_values, "cloud")
-        local_projects = _load_local_projects(
-            _section(toml_values, "local"), selected_config.parent
-        )
 
         execution_mode = _string_setting(
             "AGENT_SERVICE_EXECUTION_MODE", runtime.get("mode"), environment_fallback, "local"
         ).lower()
-        legacy_project_id = _optional_string_setting(
-            "AGENT_SERVICE_PROJECT_ID", None, environment_fallback
-        )
-        legacy_project_root = _optional_string_setting(
-            "AGENT_SERVICE_PROJECT_ROOT", None, environment_fallback
-        )
 
         workspace_value = cloud.get("workspace_root", runtime.get("workspace_root"))
         workspace_root = _path_setting(
@@ -112,11 +98,6 @@ class Settings:
             max_prompt_length=_int_setting(
                 "AGENT_SERVICE_MAX_PROMPT_LENGTH", service.get("max_prompt_length"), environment_fallback, 20_000
             ),
-            local_projects=local_projects,
-            local_project_id=None if local_projects else legacy_project_id,
-            local_project_root=None if local_projects else _resolve_path(
-                legacy_project_root, selected_config.parent
-            ),
             workspace_root=workspace_root,
             execution_mode=execution_mode,
         )
@@ -139,23 +120,6 @@ def _section(values: dict[str, Any], name: str) -> dict[str, Any]:
     if not isinstance(section, dict):
         raise ValueError(f"TOML 配置段 [{name}] 必须是表")
     return section
-
-
-def _load_local_projects(local: dict[str, Any], config_dir: Path) -> dict[str, str]:
-    projects = local.get("projects", {})
-    if not isinstance(projects, dict):
-        raise ValueError("[local.projects] 必须是项目表")
-
-    result: dict[str, str] = {}
-    for project_id, raw in projects.items():
-        if not isinstance(project_id, str) or not project_id.strip():
-            raise ValueError("每个本地项目必须使用非空 project_id 作为键")
-        if not isinstance(raw, str) or not raw.strip():
-            raise ValueError(f"本地项目 {project_id!r} 的值必须是项目目录路径字符串")
-        resolved = _resolve_path(raw, config_dir)
-        assert resolved is not None
-        result[project_id] = resolved
-    return result
 
 
 def _resolve_path(value: str | None, base_dir: Path) -> str | None:

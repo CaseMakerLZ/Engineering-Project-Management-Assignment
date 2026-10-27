@@ -3,7 +3,6 @@ package com.Agent.javabackend.Service;
 import com.Agent.javabackend.Client.PythonAgentClient;
 import com.Agent.javabackend.Service.impl.ConversationServiceImpl;
 import com.Agent.javabackend.Service.impl.ProjectServiceImpl;
-import com.Agent.javabackend.Service.ContextService;
 import com.Agent.javabackend.Mapper.ProjectMapper;
 import com.Agent.javabackend.Mapper.ConversationMapper;
 import com.Agent.javabackend.Mapper.AgentTaskMapper;
@@ -28,26 +27,16 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 class ConversationServiceImplTest {
+    /** 验证同一对话不能并行提交，且 Java 不再给第二轮请求附加历史上下文。 */
     @Test
-    void secondTurnReceivesFirstAnswerAndRejectsParallelTurn() {
+    void secondTurnSendsNoJavaContextAndRejectsParallelTurn() {
         PythonAgentClient client = mock(PythonAgentClient.class);
         ProjectMapper projectRepository = mock(ProjectMapper.class);
         ConversationMapper conversationRepository = mock(ConversationMapper.class);
         AgentTaskMapper taskRepository = mock(AgentTaskMapper.class);
-        ContextService contextService = mock(ContextService.class);
-        when(contextService.assembleContext(any())).thenAnswer(invocation -> {
-            List<com.Agent.javabackend.entity.MessageContainer.AgentTask> previous = invocation.getArgument(0);
-            if (previous.isEmpty()) {
-                return List.of();
-            }
-            return List.of(
-                    new com.Agent.javabackend.dto.ConversationDTO.ContextMessage("user", "first question"),
-                    new com.Agent.javabackend.dto.ConversationDTO.ContextMessage("assistant", "first answer")
-            );
-        });
         ProjectServiceImpl projects = new ProjectServiceImpl(projectRepository, "local");
         ConversationServiceImpl conversations = new ConversationServiceImpl(projects, client,
-                conversationRepository, taskRepository, contextService);
+                conversationRepository, taskRepository);
         CreateProjectRequest projectRequest = new CreateProjectRequest();
         projectRequest.setName("Study project");
         projectRequest.setLocalPath(Paths.get(".").toAbsolutePath().toString());
@@ -92,8 +81,7 @@ class ConversationServiceImplTest {
         verify(client, times(2)).createRun(requestCaptor.capture());
         CreateRunRequest secondRun = requestCaptor.getAllValues().get(1);
         assertEquals(conversationId, secondRun.getConversationId());
-        assertEquals(2, secondRun.getContext().size());
-        assertEquals("first question", secondRun.getContext().get(0).content());
-        assertEquals("first answer", secondRun.getContext().get(1).content());
+        // Java 只提交当前问题和对话身份；历史由 Python 从 agent_run 读取。
+        assertEquals(List.of(), secondRun.getContext());
     }
 }

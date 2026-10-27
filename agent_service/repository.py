@@ -245,15 +245,6 @@ class MySQLRunRepository:
                 cursor = connection.cursor()
                 for statement in self._schema:
                     cursor.execute(statement)
-                # CREATE IF NOT EXISTS 不会升级旧表。MySQL DDL 隐式提交，
-                # 因此旧表迁移必须在停写时显式运行脚本，不能伪装成可回滚事务。
-                cursor.execute("SHOW COLUMNS FROM agent_memory")
-                columns = {row[0] for row in cursor.fetchall()}
-                if columns != {"memory_id", "project_id", "content", "source_run_id", "updated_at"}:
-                    raise RuntimeError(
-                        "agent_memory 仍是旧结构或结构不兼容；请停写并备份数据库，"
-                        "按 agent_service/migrations/project_memory_mysql.sql 迁移后重启"
-                    )
                 connection.commit()
                 self._initialized = True
             finally:
@@ -716,11 +707,9 @@ class SQLiteRunRepository:
         return self._connection
 
     def initialize(self) -> None:
-        """幂等创建数据表，并兼容两种已经使用过的本地结构。
+        """按当前定义幂等创建数据表，不升级或搬运旧结构与旧数据。
 
-        旧 agent_run 补 context_json。旧 agent_memory 原表保留为
-        agent_memory_legacy_backup，新表仅复制原 ACTIVE 记忆；失败全部回滚。
-        这是定向升级，不是任意结构的迁移器；遇到未知结构直接报错。
+        建表在同一写事务内完成；失败回滚，不清空现有数据库。
         """
         if self._initialized:
             return
@@ -730,52 +719,9 @@ class SQLiteRunRepository:
                 return
             connection = self._connect()
             try:
-                # 先取得写锁再检查结构，其他仓储实例不会并行迁移同一个文件。
                 connection.execute("BEGIN IMMEDIATE")
-                # 兼容已经由 JSONL 版本创建的 agent_run：它缺少 context_json，
-                # 但仍然可以通过一次本地结构升级继续使用同一个 SQLite 文件。
-                connection.execute(self._schema[0])
-                columns = {
-                    row[1]
-                    for row in connection.execute("PRAGMA table_info(agent_run)").fetchall()
-                }
-                if "context_json" not in columns:
-                    connection.execute(
-                        "ALTER TABLE agent_run ADD COLUMN context_json TEXT NOT NULL DEFAULT '[]'"
-                    )
-                connection.execute(self._schema[1])
-                memory_columns = {
-                    row[1]
-                    for row in connection.execute("PRAGMA table_info(agent_memory)").fetchall()
-                }
-                expected = {"memory_id", "project_id", "content", "source_run_id", "updated_at"}
-                legacy = expected | {
-                    "conversation_id", "memory_type", "supersedes_memory_id", "status", "created_at"
-                }
-                if memory_columns == legacy:
-                    invalid_status = connection.execute(
-                        "SELECT 1 FROM agent_memory WHERE status NOT IN ('ACTIVE', 'SUPERSEDED') "
-                        "OR status IS NULL LIMIT 1"
-                    ).fetchone()
-                    if invalid_status is not None:
-                        raise RuntimeError("旧 agent_memory 存在未知状态，请检查后再迁移")
-                    # 不删除原表：保留全部旧记录，避免不可恢复地丢失旧记忆。
-                    # 备份表已存在时 ALTER 会失败，整笔回滚，不覆盖既有备份。
-                    connection.execute(
-                        "ALTER TABLE agent_memory RENAME TO agent_memory_legacy_backup"
-                    )
-                    connection.execute(self._schema[2])
-                    connection.execute(
-                        "INSERT INTO agent_memory "
-                        "(memory_id, project_id, content, source_run_id, updated_at) "
-                        "SELECT memory_id, project_id, content, source_run_id, updated_at "
-                        "FROM agent_memory_legacy_backup WHERE status = 'ACTIVE'"
-                    )
-                elif memory_columns and memory_columns != expected:
-                    raise RuntimeError("agent_memory 结构不兼容，请检查后再迁移")
-                else:
-                    connection.execute(self._schema[2])
-                connection.execute(self._schema[3])
+                for statement in self._schema:
+                    connection.execute(statement)
                 connection.commit()
                 self._initialized = True
             except Exception:

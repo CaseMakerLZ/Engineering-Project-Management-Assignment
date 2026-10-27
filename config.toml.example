@@ -31,8 +31,8 @@ database = "agent_javabackend"
 [runtime]
 mode = "local"
 
-# 新项目的本地目录由 Java 写入共享 SQLite 的 project.local_path。
-# [local.projects] 仅用于兼容迁移前的旧项目，不需要手工维护。
+# 本地项目目录只从共享 SQLite 的 project.local_path 读取，由 Java 创建项目时写入。
+# TOML 不配置本地项目与目录的映射；cloud.workspace_root 仍用于云端工作区。
 
 [cloud]
 # Used only when runtime.mode = "cloud".
