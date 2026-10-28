@@ -2,7 +2,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from .domain import RunMessage, RunStatus
+from ..runs.models import RunMessage, RunStatus
 
 
 # Python 服务检查自身状态后返回的数据。
@@ -35,5 +35,3 @@ class RunStatusResponse(BaseModel):
 class RunMessagesResponse(BaseModel):
     run_id: str
     messages: list[RunMessage]
-
-

@@ -34,16 +34,3 @@ class RunMessage(BaseModel):
     message_type: str
     content: dict[str, Any] | str | None
     created_at: datetime
-
-
-class MemoryRecord(BaseModel):
-    """agent_memory 中的一条项目长期记忆，不是运行过程消息。
-
-    同项目的不同对话共用这些记忆；source_run_id 仅供服务端追溯最后写入来源。
-    """
-
-    memory_id: str
-    project_id: str
-    content: str
-    source_run_id: str
-    updated_at: datetime

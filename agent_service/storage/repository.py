@@ -32,8 +32,9 @@ from pathlib import Path
 from threading import Lock, RLock
 from typing import Any, Protocol
 
-from .config import Settings
-from .domain import MemoryRecord, Run, RunMessage, RunStatus
+from ..config import Settings
+from ..runs.models import Run, RunMessage, RunStatus
+from .models import MemoryRecord
 
 
 # 内部格式转换：数据库里的 JSON/时间 -> Python 对象，或反向转换。

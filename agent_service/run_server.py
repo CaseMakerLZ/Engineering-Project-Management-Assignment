@@ -1,12 +1,20 @@
-import uvicorn
 import sys
 from pathlib import Path
 
 # 支持在 PyCharm 中直接运行本文件，也支持以包模块方式启动。
 if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    service_directory = Path(__file__).resolve().parent
+    # 直接运行本文件时，这个目录会排在模块查找路径中。
+    # 必须移除它，否则 http/ 会遮住 Python 自带的 http，导致 FastAPI 导入失败。
+    sys.path[:] = [
+        entry for entry in sys.path
+        if Path(entry).resolve() != service_directory
+    ]
+    sys.path.insert(0, str(service_directory.parent))
 
-from agent_service.api import app
+import uvicorn
+
+from agent_service.app import app
 
 
 if __name__ == "__main__":

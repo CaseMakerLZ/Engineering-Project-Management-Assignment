@@ -4,13 +4,13 @@ from datetime import datetime
 from pathlib import Path
 import re
 import sqlite3
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from agent.agent import Agent
 from agent.context import ContextBuilder
 from agent.loop import AgentLoop
 from agent.message import AgentMessage, MessageType
-from .config import Settings
+from ..config import Settings
 from llm.client import LLMClient
 from tools.executor import ToolExecutor
 from tools.bootstrap import create_default_registry
@@ -35,6 +35,7 @@ class AgentRuntime(Protocol):
         run_id: str | None = None,
         conversation_id: str | None = None,
         created_at: datetime | None = None,
+        on_text: Callable[[str, str], None] | None = None,
     ) -> RuntimeResult:
         ...
 
@@ -120,8 +121,11 @@ class CurrentAgentRuntime:
         run_id: str | None = None,
         conversation_id: str | None = None,
         created_at: datetime | None = None,
+        on_text: Callable[[str, str], None] | None = None,
     ) -> RuntimeResult:
         #组装Agent
+        # SSE 第一步仅预留可见文字回调；后续接模型流时才调用，不能拆分最终结果假装流式。
+        # 第二步已经接通：下方把 on_text 交给 Agent，再经 AgentLoop 传到模型客户端。
         llm = LLMClient(
             api_key=self.settings.llm_api_key,
             base_url=self.settings.llm_base_url,
@@ -190,7 +194,7 @@ class CurrentAgentRuntime:
         for message in initial_messages:
             agent.state.add(message)
         initial_history_length = len(initial_messages)
-        result = await agent.run(prompt)
+        result = await agent.run(prompt, on_text=on_text)
         # 历史消息只帮助本轮回答，不重复保存为本轮新消息。
         return RuntimeResult(
             result=result,

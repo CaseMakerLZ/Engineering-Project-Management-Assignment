@@ -1,6 +1,6 @@
 from .state import AgentStatus
 from llm.client import LLMClient
-from typing import Any
+from typing import Any, Callable
 from tools.executor import ToolExecutor, ToolExecutionResult
 from tools.registry import ToolRegistry
 from .message import AgentMessage, MessageType
@@ -17,7 +17,11 @@ class AgentLoop:
         self.executor : ToolExecutor = executor
         self.registry: ToolRegistry = registry
 
-    async def run(self,state: AgentState) -> Any:
+    async def run(
+        self, state: AgentState, *,
+        on_text: Callable[[str, str], None] | None = None,
+    ) -> Any:
+        """on_text 是收到新文字时要调用的函数；不传时保持原来的完整回答方式。"""
         state.status = AgentStatus.RUNNING
         while True:
 
@@ -28,10 +32,21 @@ class AgentLoop:
             state.increment_step()
             print(f"第{state.step}次循环")
 
-            response = await self.client.generate(
-                input=messages_to_provider_input(state.get_history()),
-                tools=self.registry.get_llm_tools(),
-            )
+            if on_text is None:
+                response = await self.client.generate(
+                    input=messages_to_provider_input(state.get_history()),
+                    tools=self.registry.get_llm_tools(),
+                )
+            else:
+                def receive_text(message_id: str, text: str) -> None:
+                    # 不同循环的文字分开保存，即使服务商重复使用了消息 ID 也不会混在一起。
+                    on_text(f"step-{state.step}:{message_id}", text)
+
+                response = await self.client.generate(
+                    input=messages_to_provider_input(state.get_history()),
+                    tools=self.registry.get_llm_tools(),
+                    on_text=receive_text,
+                )
 
             messages = response_output_to_messages(response.output)
 
