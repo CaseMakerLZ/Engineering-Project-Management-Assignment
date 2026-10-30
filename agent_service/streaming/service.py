@@ -10,6 +10,7 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
+import re
 from time import monotonic
 from typing import Any, AsyncIterator
 
@@ -76,6 +77,7 @@ class RunEvents:
     第一阶段只实现开始、文字增量、结束事件。工具/OSS 事件后续再接；快照中
     active_tool/files/warnings 先保留空值，避免未来改前端基础响应形状。
     默认上限是保护值，不是已经通过 50 人压测的容量承诺。
+    工具提示阶段已接入开始/结束事件和 active_tool；files/warnings 仍保持原空值。
     """
 
     def __init__(
@@ -167,6 +169,7 @@ class RunEvents:
                   "error": PUBLIC_FAILURE if run.status == RunStatus.FAILED else None}
         self.encode(self._event(run.run_id, name, visible.sequence + 1, fields))
         visible.status = run.status
+        visible.active_tool = None
         visible.result = run.result if run.status == RunStatus.COMPLETED else None
         visible.error = PUBLIC_FAILURE if run.status == RunStatus.FAILED else None
         visible.finished_at = monotonic()
@@ -205,7 +208,8 @@ class RunEvents:
             first = self._event(run.run_id, "run.snapshot", visible.sequence, {
                 "status": visible.status,
                 "messages": [{"message_id": key, "text": value} for key, value in visible.messages.items()],
-                "active_tool": None, "files": [], "warnings": [],
+                "active_tool": dict(visible.active_tool) if visible.active_tool else None,
+                "files": [], "warnings": [],
                 "result": visible.result, "error": visible.error,
             })
         self.encode(first)  # 超大响应在 HTTP 握手前拒绝，不留下订阅名额。
@@ -216,6 +220,49 @@ class RunEvents:
     def unsubscribe(self, subscription: EventSubscription) -> None:
         """释放一个页面的连接名额，不碰任务状态和执行协程。"""
         self._subscribers.discard(subscription)
+
+    def tool_started(self, run_id: str, call_id: str, tool_name: str) -> None:
+        """工具实际执行前通知名称；只留当前工具，重连不再显示空白等待。"""
+        visible = self._runs[run_id]
+        if visible.status != RunStatus.RUNNING:
+            return
+        self._check_tool_identity(call_id, tool_name)
+        if visible.active_tool is not None:
+            raise ValueError("上一个工具尚未结束，不能覆盖当前工具提示")
+        fields = {"call_id": call_id, "tool_name": tool_name}
+        self.encode(self._event(run_id, "tool.started", visible.sequence + 1, fields))
+        visible.active_tool = fields
+        self._publish(run_id, "tool.started", fields)
+
+    def tool_finished(
+        self, run_id: str, call_id: str, tool_name: str,
+        success: bool, error_code: str | None = None,
+    ) -> None:
+        """工具返回后通知结果；工具失败不改变整项任务的RUNNING状态。"""
+        visible = self._runs[run_id]
+        if visible.status != RunStatus.RUNNING:
+            return
+        self._check_tool_identity(call_id, tool_name)
+        if visible.active_tool != {"call_id": call_id, "tool_name": tool_name}:
+            raise ValueError("工具结束提示与当前执行工具不一致")
+        # 错误码仅接受有界机器标识，避免把异常原文/路径误当成错误码发送。
+        safe_code = error_code if isinstance(error_code, str) and re.fullmatch(
+            r"[A-Z][A-Z0-9_]{0,63}", error_code
+        ) else "TOOL_ERROR"
+        fields = {"call_id": call_id, "tool_name": tool_name, "success": success,
+                  "error_code": None if success else safe_code,
+                  "error": None if success else "工具执行失败"}
+        self.encode(self._event(run_id, "tool.finished", visible.sequence + 1, fields))
+        visible.active_tool = None
+        self._publish(run_id, "tool.finished", fields)
+
+    @staticmethod
+    def _check_tool_identity(call_id: str, tool_name: str) -> None:
+        """限制提示字段的长度和格式，不接受原始工具参数或任意内容。"""
+        if not isinstance(call_id, str) or not re.fullmatch(r"[A-Za-z0-9_:.\-]{1,256}", call_id):
+            raise ValueError("工具提示调用编号不合法")
+        if not isinstance(tool_name, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", tool_name):
+            raise ValueError("工具提示名称不合法")
 
     def close(self) -> None:
         """应用关闭时释放全部订阅和内容；不在这里取消 Agent。"""

@@ -9,6 +9,7 @@ from ..http.schemas import CreateRunRequest
 from agent.message import AgentMessage, MessageType
 from llm.mapper import reasoning_display_content
 from ..streaming.service import RunEvents
+from tools.executor import ToolExecutionResult
 
 
 def _now() -> datetime:
@@ -83,13 +84,25 @@ class RunService:
 
         try:
             # 调用 Agent Core 得到回答和过程消息。
+            def receive_text(message_id: str, text: str) -> None:
+                self.events.text(run_id, message_id, text)
+
+            def tool_started(call_id: str, tool_name: str) -> None:
+                self.events.tool_started(run_id, call_id, tool_name)
+
+            def tool_finished(call_id: str, tool_name: str, result: ToolExecutionResult) -> None:
+                # 原始错误和工具输出不交给页面；发送模块只接收成功标志与错误码。
+                self.events.tool_finished(run_id, call_id, tool_name, result.success, result.error_code)
+
             runtime_result = await self.runtime.run(
                 run.prompt,
                 project_id=run.project_id,
                 run_id=run.run_id,
                 conversation_id=run.conversation_id,
                 created_at=run.created_at,
-                on_text=lambda message_id, delta: self.events.text(run_id, message_id, delta),
+                on_text=receive_text,
+                on_tool_started=tool_started,
+                on_tool_finished=tool_finished,
             )
             latest_run = self.repository.get_run(run_id)
             if latest_run is None or latest_run.status == RunStatus.CANCELLED:

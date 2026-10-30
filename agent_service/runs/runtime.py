@@ -12,7 +12,7 @@ from agent.loop import AgentLoop
 from agent.message import AgentMessage, MessageType
 from ..config import Settings
 from llm.client import LLMClient
-from tools.executor import ToolExecutor
+from tools.executor import ToolExecutor, ToolExecutionResult
 from tools.bootstrap import create_default_registry
 from tools.exceptions import ToolError, ToolErrorCode
 
@@ -36,6 +36,8 @@ class AgentRuntime(Protocol):
         conversation_id: str | None = None,
         created_at: datetime | None = None,
         on_text: Callable[[str, str], None] | None = None,
+        on_tool_started: Callable[[str, str], None] | None = None,
+        on_tool_finished: Callable[[str, str, ToolExecutionResult], None] | None = None,
     ) -> RuntimeResult:
         ...
 
@@ -122,6 +124,8 @@ class CurrentAgentRuntime:
         conversation_id: str | None = None,
         created_at: datetime | None = None,
         on_text: Callable[[str, str], None] | None = None,
+        on_tool_started: Callable[[str, str], None] | None = None,
+        on_tool_finished: Callable[[str, str, ToolExecutionResult], None] | None = None,
     ) -> RuntimeResult:
         #组装Agent
         # SSE 第一步仅预留可见文字回调；后续接模型流时才调用，不能拆分最终结果假装流式。
@@ -194,7 +198,10 @@ class CurrentAgentRuntime:
         for message in initial_messages:
             agent.state.add(message)
         initial_history_length = len(initial_messages)
-        result = await agent.run(prompt, on_text=on_text)
+        result = await agent.run(
+            prompt, on_text=on_text,
+            on_tool_started=on_tool_started, on_tool_finished=on_tool_finished,
+        )
         # 历史消息只帮助本轮回答，不重复保存为本轮新消息。
         return RuntimeResult(
             result=result,

@@ -18,3 +18,5 @@ class VisibleRun:
     error: str | None = None
     finished_at: float | None = None
     stream_error: dict[str, Any] | None = None
+    # 只保存当前正在执行的一个工具；顺序执行结束后清空，不累计完整调用历史。
+    active_tool: dict[str, str] | None = None
