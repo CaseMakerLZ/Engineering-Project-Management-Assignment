@@ -4,8 +4,8 @@ from datetime import datetime, timedelta, timezone
 import json
 from typing import Any
 
-from agent_service.domain import Run
-from agent_service.repository import MemoryRepository
+from agent_service.runs.models import Run
+from agent_service.storage.repository import MemoryRepository
 
 from .RememberToolExecutionOutput import RememberOutput
 from .SearchMemoryToolExecutionOutput import (

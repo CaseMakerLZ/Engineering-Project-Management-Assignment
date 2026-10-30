@@ -1,39 +1,19 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, Header, HTTPException, status
+"""Java 请求的具体处理入口；创建服务和装配依赖放在 agent_service/app.py。"""
 
-from .config import Settings
-from .domain import Run, RunMessage
-from .repository import RunRepository, create_run_repository
-from .schemas import (
-    CreateRunRequest,
-    HealthResponse,
-    RunMessagesResponse,
-    RunStatusResponse,
-)
-from .service import RunService
-from .runtime import CurrentAgentRuntime
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, status
+from fastapi.responses import StreamingResponse
+from starlette.concurrency import run_in_threadpool
+
+from ..config import Settings
+from ..runs.models import Run, RunMessage
+from ..runs.service import RunService
+from ..storage.repository import RunRepository
+from ..streaming.exception import EventLimitError
+from .schemas import CreateRunRequest, HealthResponse, RunMessagesResponse, RunStatusResponse
 
 
-# 创建 Python HTTP 服务，并把数据库、任务服务和 Agent 运行方式连接起来。
-# 测试时可以传入假的数据库和假的 Runtime，因此不需要真的调用模型。
-def create_app(
-    settings: Settings | None = None,
-    repository: RunRepository | None = None,
-    run_service: RunService | None = None,
-) -> FastAPI:
-    settings = settings or Settings.from_environment()
-    repository = repository or create_run_repository(settings)
-    run_service = run_service or RunService(
-        repository,
-        # Runtime 和 RunService 共用同一个仓储，ContextBuilder 才能读取
-        # 当前项目/对话的历史，并把实际上下文快照保存回同一条 agent_run。
-        CurrentAgentRuntime(settings, repository),
-    )
-
-    app = FastAPI(
-        title="Python Agent Service",
-        version="1.0.0",
-        description="Internal HTTP API consumed by the Java Spring Boot backend.",
-    )
+def create_router(settings: Settings, repository: RunRepository, run_service: RunService) -> APIRouter:
+    """把接口连接到当前应用的配置、数据库和任务服务，不创建第二套运行对象。"""
     router = APIRouter(prefix="/api/internal")
 
     # 如果设置了令牌，Java 每次请求都必须带上相同的令牌，保护AgentCore的各个接口只能被java端访问。
@@ -62,7 +42,10 @@ def create_app(
         background_tasks: BackgroundTasks,
     ) -> RunStatusResponse:
         # 先保存任务并立即返回 ID，耗时的 Agent 工作放到后台执行。
-        run = run_service.create(request)
+        try:
+            run = run_service.create(request)
+        except EventLimitError as exc:
+            raise HTTPException(503, detail={"code": exc.code, "message": str(exc)}) from exc
         background_tasks.add_task(run_service.execute, run.run_id)
         #下面一行返回是返回给java调用端的
         return RunStatusResponse(run_id=run.run_id, status=run.status)
@@ -79,6 +62,29 @@ def create_app(
         if run is None:
             raise HTTPException(status_code=404, detail="run not found")
         return run
+
+    @router.get("/runs/{run_id}/events", dependencies=[Depends(verify_token)])
+    async def get_events(run_id: str) -> StreamingResponse:
+        """仅订阅现有运行；读库一次，不循环查状态，也不在流中持有数据库连接。"""
+        try:
+            run = await run_in_threadpool(repository.get_run, run_id)
+        except Exception as exc:
+            raise HTTPException(503, detail={
+                "code": "STORAGE_UNAVAILABLE", "message": "任务存储暂不可用"
+            }) from exc
+        if run is None:
+            raise HTTPException(404, detail="run not found")
+        try:
+            subscription = run_service.events.subscribe(run)
+        except EventLimitError as exc:
+            raise HTTPException(
+                429 if exc.code == "SUBSCRIPTION_LIMIT" else 503,
+                detail={"code": exc.code, "message": str(exc)},
+            ) from exc
+        # 订阅的 finally 不调用 execute/cancel，连接断开不会中断后台任务。
+        return StreamingResponse(subscription.frames(), media_type="text/event-stream", headers={
+            "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+        })
 
     @router.get(
         "/runs/{run_id}/messages",
@@ -107,12 +113,4 @@ def create_app(
             raise HTTPException(status_code=404, detail="run not found")
         return RunStatusResponse(run_id=run.run_id, status=run.status)
 
-    app.include_router(router)
-    app.state.settings = settings
-    app.state.repository = repository
-    app.state.run_service = run_service
-    return app
-
-
-# Uvicorn 默认导入的应用对象；测试可改用 create_app 注入隔离依赖。
-app = create_app()
+    return router

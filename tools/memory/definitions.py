@@ -7,7 +7,7 @@ from typing import Any
 from tools.registry import ToolDefinition
 
 from .params import RememberArgs, SearchMemoryArgs
-from agent_service.repository import MemoryRepository
+from agent_service.storage.repository import MemoryRepository
 
 from .service import remember, search_memory
 

@@ -20,7 +20,8 @@ import json
 from typing import Protocol
 
 from agent.message import AgentMessage, MessageType
-from agent_service.domain import MemoryRecord, Run
+from agent_service.runs.models import Run
+from agent_service.storage.models import MemoryRecord
 
 
 class HistoryRepository(Protocol):
