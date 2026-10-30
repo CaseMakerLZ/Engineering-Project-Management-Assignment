@@ -29,6 +29,8 @@ class FileEntry:
     size_bytes: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """转成 Java 说明第 6.1 节示例里的条目字段（四个键，不多不少）。"""
+
         return {
             "name": self.name,
             "path": self.path,
@@ -51,6 +53,8 @@ class DirectoryPage:
     next_cursor: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """转成 Java 说明第 6.1 节的 data 本体（条目转为列表）。"""
+
         return {
             "project_id": self.project_id,
             "path": self.path,
@@ -74,6 +78,8 @@ class FilePreview:
     encoding: str = "utf-8"
 
     def to_dict(self) -> dict[str, Any]:
+        """转成 Java 说明第 6.2 节的 data 本体。"""
+
         return {
             "project_id": self.project_id,
             "path": self.path,
@@ -91,4 +97,6 @@ class WorkspaceStatus:
     ready: bool = True
 
     def to_dict(self) -> dict[str, Any]:
+        """转成 Java 说明第 8 节表格里约定的 ``{project_id, ready}``。"""
+
         return {"project_id": self.project_id, "ready": self.ready}
