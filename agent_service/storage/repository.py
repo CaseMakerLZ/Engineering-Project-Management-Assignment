@@ -117,6 +117,12 @@ class RunRepository(Protocol):
         """供 ContextBuilder 取本轮之前同项目同对话的最近已完成运行，正序返回。"""
         ...
 
+    # 项目归属：云端工作区按用户分层，真实目录必须由可信的 owner_id 决定，
+    # 不能因为"收到一个合法 UUID"就给它建目录。
+    def get_project_owner(self, project_id: str) -> str | None:
+        """读取云端项目的 owner_id；项目不存在或没有归属时返回 None。"""
+        ...
+
 
 class MemoryRepository(Protocol):
     """记忆工具依赖的最小仓储接口，也声明项目长期记忆读取能力。
@@ -303,6 +309,29 @@ class MySQLRunRepository:
             )
         finally:
             connection.close()
+
+    def get_project_owner(self, project_id: str) -> str | None:
+        """读取云端 project.owner_id，供工作区目录定位使用。
+
+        project 表由 Java 建表维护，Python 只读，不建表、不改数据。
+        项目不存在或 owner_id 为空串/NULL 都返回 None，由调用方明确拒绝；
+        这里不做"猜一个目录给他"的兜底。
+        """
+        if not project_id:
+            return None
+        connection = self._connect()
+        try:
+            cursor = connection.cursor()
+            cursor.execute("SELECT owner_id FROM project WHERE id = %s", (project_id,))
+            row = cursor.fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            return None
+        owner_id = row[0]
+        if not isinstance(owner_id, str) or not owner_id.strip():
+            return None
+        return owner_id.strip()
 
     def list_recent_completed_runs(
         self, project_id: str, conversation_id: str, before_created_at: datetime, limit: int
@@ -793,6 +822,15 @@ class SQLiteRunRepository:
                 (run_id,),
             ).fetchone()
             return _run_from_row(row) if row is not None else None
+
+    def get_project_owner(self, project_id: str) -> str | None:
+        """本地 SQLite 的 project 表没有用户归属，一律返回 None。
+
+        本地模式不使用按用户分层的云端目录（项目目录来自 project.local_path），
+        所以这里不是"实现遗漏"，而是本地确实没有 owner 概念。云端模式如果误配
+        成 SQLite，会因此在目录定位阶段被明确拒绝，而不是悄悄用一个共享目录。
+        """
+        return None
 
     def list_recent_completed_runs(
         self, project_id: str, conversation_id: str, before_created_at: datetime, limit: int

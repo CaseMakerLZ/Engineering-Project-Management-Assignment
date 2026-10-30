@@ -2,7 +2,6 @@
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-import re
 import sqlite3
 from typing import Any, Callable, Protocol
 
@@ -11,6 +10,8 @@ from agent.context import ContextBuilder
 from agent.loop import AgentLoop
 from agent.message import AgentMessage, MessageType
 from ..config import Settings
+from ..workspace.exception import WorkspaceError
+from ..workspace.policy import is_valid_identifier, resolve_project_directory
 from llm.client import LLMClient
 from tools.executor import ToolExecutor, ToolExecutionResult
 from tools.bootstrap import create_default_registry
@@ -42,29 +43,71 @@ class AgentRuntime(Protocol):
         ...
 
 
-def resolve_project_root(settings: Settings, project_id: str | None) -> Path:
-    """根据运行模式解析本次任务实际允许访问的项目目录。"""
+def resolve_project_root(
+    settings: Settings,
+    project_id: str | None,
+    *,
+    repository: Any | None = None,
+) -> Path:
+    """根据运行模式解析本次任务实际允许访问的项目目录。
+
+    本地模式继续读共享 SQLite 的 ``project.local_path``；云端模式先用
+    ``project_id`` 查可信的 ``owner_id``，再拼
+    ``workspace_root/users/{owner_id}/projects/{project_id}``。
+
+    云端目录不由模型或浏览器指定：即使收到一个格式合法的 project_id，也要先
+    有数据库里的归属记录才算数。``repository`` 只在云端模式需要。
+    """
     mode = settings.execution_mode.lower()
     if mode == "local":
         return _resolve_local_project_from_database(settings, project_id)
 
     if mode == "cloud":
-        if project_id is None:
-            raise ToolError(ToolErrorCode.CONFIGURATION_ERROR, "云端运行必须提供 project_id")
-        if not re.fullmatch(r"[A-Za-z0-9_-]+", project_id):
-            raise ToolError(ToolErrorCode.CONFIGURATION_ERROR, "project_id 只能包含字母、数字、下划线和连字符")
-        root = Path(settings.workspace_root).expanduser().resolve()
-        if not root.is_dir():
-            raise ToolError(ToolErrorCode.CONFIGURATION_ERROR, "云端工作区根目录不存在或不是目录")
-        project_path = root / project_id
-        if project_path.is_symlink():
-            raise ToolError(ToolErrorCode.CONFIGURATION_ERROR, "云端项目工作区不能是符号链接")
-        project_root = project_path.resolve()
-        if not project_root.is_relative_to(root) or not project_root.is_dir():
-            raise ToolError(ToolErrorCode.CONFIGURATION_ERROR, "云端项目工作区不存在或不在工作区根目录内")
-        return project_root
+        return _resolve_cloud_project_root(settings, project_id, repository)
 
     raise ToolError(ToolErrorCode.CONFIGURATION_ERROR, "AGENT_SERVICE_EXECUTION_MODE 只能是 local 或 cloud")
+
+
+def _resolve_cloud_project_root(
+    settings: Settings, project_id: str | None, repository: Any | None
+) -> Path:
+    """云端项目目录：归属来自数据库，路径由服务端拼，逐层查链接。"""
+    if project_id is None:
+        raise ToolError(ToolErrorCode.CONFIGURATION_ERROR, "云端运行必须提供 project_id")
+    if not is_valid_identifier(project_id):
+        raise ToolError(
+            ToolErrorCode.CONFIGURATION_ERROR, "project_id 只能包含字母、数字、下划线和连字符"
+        )
+    if repository is None:
+        # 没有归属查询就无法确定 users/{user_id} 这一层，宁可拒绝也不猜目录。
+        raise ToolError(ToolErrorCode.CONFIGURATION_ERROR, "云端运行需要项目归属查询")
+
+    try:
+        owner_id = repository.get_project_owner(project_id)
+    except Exception as exc:
+        raise ToolError(ToolErrorCode.CONFIGURATION_ERROR, "无法读取项目归属") from exc
+    if not owner_id:
+        raise ToolError(ToolErrorCode.CONFIGURATION_ERROR, "项目不存在或未绑定所有者")
+    if not is_valid_identifier(owner_id):
+        # owner 不是可用的单层目录名时按"没有可用归属"处理，不把内部布局细节
+        # 暴露给调用方；这条同时挡住了从数据库写入斜杠/点路径的异常数据。
+        raise ToolError(ToolErrorCode.CONFIGURATION_ERROR, "项目不存在或未绑定所有者")
+
+    root = Path(settings.workspace_root).expanduser()
+    if not root.is_dir():
+        raise ToolError(ToolErrorCode.CONFIGURATION_ERROR, "云端工作区根目录不存在或不是目录")
+
+    try:
+        project_root = resolve_project_directory(root, owner_id, project_id)
+    except WorkspaceError as exc:
+        # 工作区域异常在这里收敛成 ToolError，保持 Runtime 对外抛错类型不变。
+        raise ToolError(ToolErrorCode.CONFIGURATION_ERROR, exc.public_message()) from exc
+
+    if not project_root.is_dir():
+        raise ToolError(
+            ToolErrorCode.CONFIGURATION_ERROR, "云端项目工作区不存在，请先准备工作区"
+        )
+    return project_root.resolve()
 
 
 def _resolve_local_project_from_database(settings: Settings, project_id: str | None) -> Path:
@@ -136,7 +179,9 @@ class CurrentAgentRuntime:
             model=self.settings.llm_model_id,
             timeout_seconds=self.settings.llm_timeout_seconds,
         )
-        project_root = resolve_project_root(self.settings, project_id)
+        project_root = resolve_project_root(
+            self.settings, project_id, repository=self.repository
+        )
         registry = create_default_registry(
             project_root=project_root,
             web_api_key=self.settings.web_api_key,
