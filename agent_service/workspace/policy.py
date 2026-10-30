@@ -16,11 +16,12 @@
 from __future__ import annotations
 
 import errno
+from contextlib import contextmanager, ExitStack
 import os
 import re
 import stat
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Iterator
 from urllib.parse import quote
 
 from .exception import WorkspaceError, WorkspaceErrorCode
@@ -160,36 +161,18 @@ def ensure_project_directory(
     （本函数根本不进入项目目录内部）。
     """
 
-    root = Path(workspace_root).expanduser()
-    if not root.is_dir():
-        raise WorkspaceError(WorkspaceErrorCode.WORKSPACE_UNAVAILABLE, "工作区根目录不存在")
-
-    current = root
-    for part in build_project_relative(user_id, project_id).split("/"):
-        current = current / part
-        info = _lstat_or_none(current)
-        if info is None:
-            try:
-                os.mkdir(current)
-            except FileExistsError:
-                # 并发创建或刚被别人建好，下面统一按实际类型再审一次。
-                pass
-            except OSError as exc:
-                raise WorkspaceError(
-                    WorkspaceErrorCode.WORKSPACE_UNAVAILABLE, "无法创建项目工作区"
-                ) from exc
-            info = _lstat_or_none(current)
-            if info is None:
-                raise WorkspaceError(
-                    WorkspaceErrorCode.WORKSPACE_UNAVAILABLE, "项目工作区创建后不可见"
-                )
-        if stat.S_ISLNK(info.st_mode):
-            raise WorkspaceError(WorkspaceErrorCode.PATH_FORBIDDEN, "不接受符号链接")
-        if not stat.S_ISDIR(info.st_mode):
+    # 补丁：上方说明中的 lstat/mkdir 只能发现静态链接，不能锁定父目录。
+    # 实际创建改为一直持有每层目录的打开对象，mkdir 也从该父目录出发。
+    relative = build_project_relative(user_id, project_id)
+    try:
+        with open_project_directory(workspace_root, relative, create=True):
+            return Path(workspace_root).expanduser().absolute() / relative
+    except WorkspaceError as exc:
+        if exc.code == WorkspaceErrorCode.ENTRY_NOT_FOUND.value:
             raise WorkspaceError(
-                WorkspaceErrorCode.WORKSPACE_UNAVAILABLE, "项目工作区路径被非目录占用"
-            )
-    return current
+                WorkspaceErrorCode.WORKSPACE_UNAVAILABLE, "工作区根目录不存在"
+            ) from exc
+        raise
 
 
 def normalize_path(raw: str | None) -> str:
@@ -235,7 +218,12 @@ def normalize_path(raw: str | None) -> str:
 def _is_excluded_dir(name: str) -> bool:
     """判断目录名是否属于排除名单（依赖、缓存、构建产物、版本库元数据）。"""
 
-    return name.lower() in _EXCLUDED_DIR_NAMES
+    # .env.example 等只允许作为模板文件，不能作为目录隐藏内部敏感文件。
+    return (
+        name.lower() in _EXCLUDED_DIR_NAMES
+        or _is_excluded_file(name)
+        or name.lower() in _ENV_TEMPLATE_NAMES
+    )
 
 
 def _is_excluded_file(name: str) -> bool:
@@ -275,9 +263,12 @@ def is_exportable(relative_path: str | None) -> bool:
     if not path:
         return False
     parts = path.split("/")
-    if any(_is_excluded_dir(part) for part in parts):
+    if any(_is_excluded_dir(part) for part in parts[:-1]):
         return False
-    return not _is_excluded_file(parts[-1])
+    return (
+        parts[-1].lower() not in _EXCLUDED_DIR_NAMES
+        and not _is_excluded_file(parts[-1])
+    )
 
 
 def is_exportable_dir(relative_path: str | None) -> bool:
@@ -323,6 +314,8 @@ def resolve_in_project(project_root: str | Path, relative_path: str | None) -> P
     本函数不会因为链接而读到项目外的内容。
     """
 
+    # 补丁说明：本函数只返回检查时的路径，不能阻止返回后的目录替换。
+    # 真正枚举/读取必须使用 open_project_directory / open_export_file 的打开对象。
     root = Path(project_root).expanduser()
     if not root.is_dir():
         raise WorkspaceError(WorkspaceErrorCode.WORKSPACE_UNAVAILABLE, "项目工作区不可用")
@@ -342,7 +335,7 @@ def resolve_in_project(project_root: str | Path, relative_path: str | None) -> P
             raise WorkspaceError(
                 WorkspaceErrorCode.WORKSPACE_UNAVAILABLE, "无法检查项目路径"
             ) from exc
-        if stat.S_ISLNK(info.st_mode):
+        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
             raise WorkspaceError(WorkspaceErrorCode.PATH_FORBIDDEN, "不接受符号链接")
 
     try:
@@ -393,6 +386,136 @@ def _is_unfollowable_link_error(exc: OSError) -> bool:
     return exc.errno in candidates
 
 
+def _open_error(exc: OSError) -> WorkspaceError:
+    """统一翻译打开失败，不把系统错误中的真实路径交给调用者。"""
+    if isinstance(exc, FileNotFoundError):
+        return WorkspaceError(WorkspaceErrorCode.ENTRY_NOT_FOUND, "目标不存在")
+    if _is_unfollowable_link_error(exc):
+        return WorkspaceError(WorkspaceErrorCode.PATH_FORBIDDEN, "目标路径不允许访问")
+    return WorkspaceError(WorkspaceErrorCode.WORKSPACE_UNAVAILABLE, "无法打开项目路径")
+
+
+def _open_windows_handle(path: Path) -> int:
+    """打开且固定 Windows 条目；禁止删除/改名共享，并拒绝 junction 等重解析点。"""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    create = kernel.CreateFileW
+    create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                       wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    create.restype = wintypes.HANDLE
+    close = kernel.CloseHandle
+    close.argtypes = [wintypes.HANDLE]
+    close.restype = wintypes.BOOL
+    # GENERIC_READ；只共享读/写，不共享删除；打开链接本身而非链接目标。
+    handle = create(str(path), 0x80000000, 0x1 | 0x2, None, 3,
+                    0x02000000 | 0x00200000, None)
+    if handle == wintypes.HANDLE(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    class AttributeTag(ctypes.Structure):
+        _fields_ = [("attributes", wintypes.DWORD), ("tag", wintypes.DWORD)]
+    info = AttributeTag()
+    inspect = kernel.GetFileInformationByHandleEx
+    inspect.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
+    inspect.restype = wintypes.BOOL
+    try:
+        if not inspect(handle, 9, ctypes.byref(info), ctypes.sizeof(info)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if info.attributes & 0x400:
+            raise WorkspaceError(WorkspaceErrorCode.PATH_FORBIDDEN, "不接受链接或重解析点")
+    except BaseException:
+        close(handle)
+        raise
+    return handle
+
+
+def _close_windows_handle(handle: int) -> None:
+    """释放固定的 Windows 条目；与成功的打开一一对应。"""
+    import ctypes
+    from ctypes import wintypes
+    close = ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle
+    close.argtypes = [wintypes.HANDLE]
+    close.restype = wintypes.BOOL
+    close(handle)
+
+
+@contextmanager
+def open_project_directory(
+    project_root: str | Path | int, relative_path: str | None = "", *, create: bool = False
+) -> Iterator[int | Path]:
+    """在使用期间固定每层目录，退出时释放，不再按已检查的旧路径重新查找。
+
+    Linux 返回目录描述符，后续打开/扫描从该目录出发。Windows 返回 Path，
+    但其所有父目录均持有禁止删除/改名的系统句柄，所以链接替换不能插进来。
+    create 只用于准备工作区：根目录必须已存在，只补建其下缺失的目录。
+    """
+    relative = normalize_path(relative_path)
+    root = (
+        None if isinstance(project_root, int)
+        else Path(os.path.abspath(Path(project_root).expanduser()))
+    )
+    with ExitStack() as stack:
+        current = Path(root.anchor) if root is not None else Path(".")
+        descriptor: int | None = None
+        try:
+            if root is None:
+                descriptor = os.dup(project_root)
+                stack.callback(os.close, descriptor)
+                flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            elif os.name == "nt":
+                handle = _open_windows_handle(current)
+                stack.callback(_close_windows_handle, handle)
+            else:
+                flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                descriptor = os.open(current, flags)
+                stack.callback(os.close, descriptor)
+            # 先固定根路径自身的各层，再处理调用者指定的项目内目录。
+            segments = [(part, False) for part in root.parts[1:]] if root is not None else []
+            segments += [(part, create) for part in relative.split("/") if part]
+            for part, may_create in segments:
+                current = current / part
+                if may_create:
+                    try:
+                        if os.name == "nt":
+                            os.mkdir(current)
+                        else:
+                            os.mkdir(part, dir_fd=descriptor)
+                    except FileExistsError:
+                        pass  # 接下来打开时统一检查类型和链接。
+                if os.name == "nt":
+                    handle = _open_windows_handle(current)
+                    stack.callback(_close_windows_handle, handle)
+                    if not current.is_dir():
+                        raise WorkspaceError(
+                            WorkspaceErrorCode.WORKSPACE_UNAVAILABLE if create
+                            else WorkspaceErrorCode.ENTRY_NOT_FOUND, "目标不是目录"
+                        )
+                else:
+                    try:
+                        child = os.open(part, flags, dir_fd=descriptor)
+                    except NotADirectoryError as exc:
+                        # Linux 对链接+O_DIRECTORY 也可能报 ENOTDIR，不能当普通文件。
+                        info = os.stat(part, dir_fd=descriptor, follow_symlinks=False)
+                        if stat.S_ISLNK(info.st_mode):
+                            raise WorkspaceError(
+                                WorkspaceErrorCode.PATH_FORBIDDEN, "不接受符号链接"
+                            ) from exc
+                        raise WorkspaceError(
+                            WorkspaceErrorCode.WORKSPACE_UNAVAILABLE if create
+                            else WorkspaceErrorCode.ENTRY_NOT_FOUND, "目标不是目录"
+                        ) from exc
+                    descriptor = child
+                    stack.callback(os.close, descriptor)
+            yield current if os.name == "nt" else descriptor
+        except OSError as exc:
+            if create and isinstance(exc, NotADirectoryError):
+                raise WorkspaceError(
+                    WorkspaceErrorCode.WORKSPACE_UNAVAILABLE, "项目工作区路径被非目录占用"
+                ) from exc
+            raise _open_error(exc) from exc
+
+
 def open_export_file(
     project_root: str | Path, relative_path: str, *, allow_hardlink: bool = False
 ) -> tuple[BinaryIO, os.stat_result]:
@@ -406,21 +529,28 @@ def open_export_file(
     处置，允许通过参数显式放开。
     """
 
-    path = resolve_in_project(project_root, relative_path)
+    relative = normalize_path(relative_path)
     if not is_exportable(relative_path):
         raise WorkspaceError(WorkspaceErrorCode.PATH_FORBIDDEN, "目标文件不允许导出")
 
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        descriptor = os.open(os.fspath(path), flags)
-    except FileNotFoundError as exc:
-        raise WorkspaceError(WorkspaceErrorCode.ENTRY_NOT_FOUND, "目标不存在") from exc
-    except OSError as exc:
-        if _is_unfollowable_link_error(exc):
-            raise WorkspaceError(WorkspaceErrorCode.PATH_FORBIDDEN, "目标文件不允许导出") from exc
-        raise WorkspaceError(
-            WorkspaceErrorCode.WORKSPACE_UNAVAILABLE, "无法打开目标文件"
-        ) from exc
+    # 补丁：不仅最后的文件，前面的每一层目录也要在打开期间被固定。
+    parent, _, name = relative.rpartition("/")
+    with open_project_directory(project_root, parent) as directory:
+        try:
+            if os.name == "nt":
+                import msvcrt
+                handle = _open_windows_handle(directory / name)
+                try:
+                    descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+                except BaseException:
+                    _close_windows_handle(handle)
+                    raise
+            else:
+                # NONBLOCK 避免 FIFO 等特殊条目在 fstat 拒绝之前卡住线程。
+                descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                                     dir_fd=directory)
+        except OSError as exc:
+            raise _open_error(exc) from exc
 
     try:
         info = os.fstat(descriptor)

@@ -34,7 +34,7 @@ from .policy import (
     is_exportable_dir,
     is_valid_identifier,
     normalize_path,
-    resolve_in_project,
+    open_project_directory,
     resolve_project_directory,
 )
 
@@ -126,12 +126,11 @@ class WorkspaceService:
         relative = normalize_path(path)
         if relative and not is_exportable_dir(relative):
             raise WorkspaceError(WorkspaceErrorCode.PATH_FORBIDDEN, "目录不允许浏览")
-        directory = resolve_in_project(project_root, relative)
-        if not directory.is_dir():
-            raise WorkspaceError(WorkspaceErrorCode.ENTRY_NOT_FOUND, "目录不存在")
-
         size = self._page_size(page_size)
-        entries, fingerprint = self._scan_directory(directory, relative)
+        # 从工作区根开始固定用户层/项目层，不能只固定项目内最后的子目录。
+        with open_project_directory(root, project_root.relative_to(root).as_posix()) as project:
+            with open_project_directory(project, relative) as directory:
+                entries, fingerprint = self._scan_directory(directory, relative)
 
         offset = 0
         if cursor:
@@ -218,7 +217,7 @@ class WorkspaceService:
         return size
 
     def _scan_directory(
-        self, directory: Path, relative: str
+        self, directory: int | Path, relative: str
     ) -> tuple[list[FileEntry], str]:
         """扫一层目录，返回排序后的条目和"目录指纹"。
 
@@ -260,6 +259,9 @@ class WorkspaceService:
         try:
             # 不跟随链接：符号链接可能指向项目外，一律不作为条目暴露。
             if item.is_symlink():
+                return None
+            # Windows junction 不一定被 is_symlink 识别，也不能出现在文件树。
+            if getattr(item.stat(follow_symlinks=False), "st_file_attributes", 0) & 0x400:
                 return None
             if item.is_dir(follow_symlinks=False):
                 kind, size = ENTRY_KIND_DIRECTORY, None
