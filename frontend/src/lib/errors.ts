@@ -18,14 +18,19 @@ const ERROR_MESSAGES: Record<number, string> = {
   10003: '你没有权限访问该资源。',
   10004: '项目、对话或任务不存在，或已被删除。',
   10005: '资源状态已发生变化，请刷新后重试。',
+  10006: '实时连接数已达到上限，请保留当前连接并稍后重试。',
   20001: '用户名已存在，请更换一个。',
   20002: '用户名或密码错误。',
   30003: '项目不存在或已被删除。',
   30004: '对话不存在或已被删除。',
   30005: '当前对话已有任务正在执行，请等待完成后再提交。',
   30006: '任务不存在或已被删除。',
+  30007: '项目正在执行其他任务，请等待结束后再试。',
+  30008: '文件不存在或尚未发布。',
   40001: 'Agent 服务暂时不可用，请稍后重试。',
   40002: 'Agent 响应超时，请稍后重试。',
+  40005: '当前执行容量已满，请稍后再试。',
+  40006: '文件服务暂时不可用，请稍后重试。',
   50000: '系统内部错误，请稍后重试。',
   90001: '系统内部错误，请稍后重试。',
 }
@@ -55,6 +60,10 @@ export function describeError(error: unknown): string {
 export function isResourceNotFound(error: unknown): boolean {
   return (
     error instanceof ApiError &&
-    (error.status === 404 || error.code === 10004 || error.code === 30003 || error.code === 30004)
+    (error.status === 404 ||
+      error.code === 10004 ||
+      error.code === 30003 ||
+      error.code === 30004 ||
+      error.code === 30008)
   )
 }

@@ -60,3 +60,10 @@ export function shortId(value: string): string {
   if (value.length <= 12) return value
   return `${value.slice(0, 6)}…${value.slice(-4)}`
 }
+
+export function formatFileSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return '—'
+  if (bytes < 1_024) return `${bytes} B`
+  if (bytes < 1_024 * 1_024) return `${(bytes / 1_024).toFixed(1)} KB`
+  return `${(bytes / (1_024 * 1_024)).toFixed(1)} MB`
+}

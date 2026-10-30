@@ -4,6 +4,31 @@
     --pane-width: 260px;
   }
 
+  .workspace.files-panel-open {
+    grid-template-columns: var(--pane-width) minmax(0, 1fr);
+  }
+
+  .project-files-panel {
+    position: fixed;
+    top: 0;
+    right: 0;
+    z-index: 78;
+    width: min(390px, 92vw);
+    box-shadow: var(--shadow-lg);
+    animation: files-panel-in 180ms ease-out;
+  }
+
+  .files-panel-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 75;
+    display: block;
+    padding: 0;
+    border: 0;
+    background: rgba(25, 31, 35, 0.3);
+    backdrop-filter: blur(3px);
+  }
+
   .projects-content {
     padding-right: 38px;
     padding-left: 38px;
@@ -188,6 +213,10 @@
     border-bottom: 1px solid var(--line);
     background: rgba(248, 245, 239, 0.91);
     backdrop-filter: blur(14px);
+  }
+
+  .workspace-mobile-bar > .icon-btn:last-child {
+    margin-left: -6px;
   }
 
   .workspace-mobile-project {
@@ -406,19 +435,6 @@
     line-height: 1.45;
   }
 
-  .polling-notice {
-    align-items: flex-start;
-    flex-wrap: wrap;
-  }
-
-  .polling-notice > span {
-    flex-basis: calc(100% - 28px);
-  }
-
-  .polling-notice button {
-    margin-left: 23px;
-  }
-
   .modal-layer {
     align-items: flex-end;
     padding: 10px;
@@ -442,7 +458,55 @@
   }
 
   .modal-footer {
+    flex-wrap: wrap;
     padding: 14px 19px;
+  }
+
+  .modal-footer-leading {
+    width: 100%;
+    justify-content: flex-start;
+    margin-right: 0;
+  }
+
+  .directory-picker-toolbar {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .directory-breadcrumbs {
+    order: 3;
+    flex-basis: 100%;
+    padding: 5px 2px 0;
+  }
+
+  .directory-new-folder {
+    margin-left: auto;
+  }
+
+  .directory-roots {
+    grid-template-columns: 1fr;
+    padding: 10px;
+  }
+
+  .directory-create-form {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
+  .directory-create-form label {
+    flex-basis: 100%;
+  }
+
+  .directory-picker-list {
+    max-height: 43vh;
+  }
+
+  .selected-directory-control {
+    grid-template-columns: 1fr;
+  }
+
+  .selected-directory-control .btn {
+    width: 100%;
   }
 
   .workspace-error-card,
@@ -461,6 +525,13 @@
 
   .empty-state h2 {
     font-size: 23px;
+  }
+}
+
+@keyframes files-panel-in {
+  from {
+    opacity: 0;
+    transform: translateX(18px);
   }
 }
 

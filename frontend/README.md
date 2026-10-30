@@ -1,57 +1,30 @@
 # AgentDesk Frontend
 
-课程项目「AI-Agent Helper」的前端工作区。技术栈为 **React 19 + TypeScript + Vite**，只调用 Java 后端 `/api/**`，不直接访问 Python `/api/internal/**`。
+React 19 + TypeScript + Vite 前端。浏览器只访问 Java 后端 `/api/**`，不连接
+Python、数据库、Redis 或 OSS，也不读取内部服务令牌。
 
-## 我负责的前端任务
+## 本周前端能力
 
-结合《本周任务完整版》和《接口文档》，前端需要完成以下内容：
+- 使用带 Bearer 的 `fetch` 持续读取任务 SSE，不把令牌放入 URL，也不读取整段
+  `response.text()`。
+- SSE 解析兼容中文/JSON 跨网络块、一块多帧、CRLF、多行 `data`、heartbeat 和未完成帧大小上限。
+- `run.snapshot` 替换当前显示，增量文字按 `message_id` 追加，重复序号忽略，
+  `stream.error` 优先处理。
+- 任务 `RUNNING` 时显示过程和工具状态；工具失败只标记该调用，不把任务改成失败。
+- 终态展示最终答案并关闭连接；断线约 1/2/4 秒最多重连三次，随后只做一次普通任务查询，
+  保留手动重连入口，不恢复定时轮询。
+- 云端项目提供右侧只读文件树、UTF-8 文本预览、单文件下载和项目 ZIP 下载；窄屏改为抽屉。
+- 文件读取具备目录/正文缓存、在途请求合并、过期响应隔离、10 MiB/20 文件 LRU 限制；
+  任务任一终态后清空缓存并刷新当前可见目录与已打开文件。
+- Markdown 只拦截同源且严格匹配 `/api/projects/{projectId}/files/download?path=...` 的链接，
+  下载时使用 Bearer；普通外链保留原行为。
+- 本地模式创建项目时通过 Java 返回的允许根逐层点选文件夹，支持空目录、手动加载更多和新建
+  单层文件夹，最终只读回显 `absolute_path` 并自动填入原 `local_path`。cloud 页面不请求本机目录接口。
+- 创建入口提供“新建空白项目”和“从本地文件夹创建”两种方式；本地文件夹方式会预填目录名称，
+  但不会复制或上传现有文件。cloud 因缺少上传/导入接口会明确禁用本地导入方式。
+- 保留登录、项目、对话、Markdown/GFM、KaTeX、代码块、响应式和错误处理。
 
-1. 设计并实现简洁、完整的页面视觉与响应式布局。
-2. 统一封装 API 请求：基础地址、JSON、Bearer token、`Result<T>`、HTTP 状态码和业务码。
-3. 项目页：获取项目列表、创建项目、查看项目详情；没有项目时显示真实空状态。
-4. 对话页：创建对话、对话列表、对话详情、历史任务列表。
-5. 提交任务：调用 `POST /api/conversations/{id}/turns`，保存响应中的 `task_id`。
-6. 轮询任务：处理 `CREATED / RUNNING / COMPLETED / FAILED / CANCELLED`，且必须有停止条件。
-7. 错误处理：10001、10002、10003、10004、10005、30005、40001、40002、50000。
-8. Markdown 渲染、GFM 表格、代码块以及 KaTeX 数学公式。
-9. 本地模式不显示登录流程；云端模式提供注册、登录、退出登录和 token 自动携带。
-10. 不在页面写死项目、对话、任务或 Agent 回答。
-
-## 已完成的功能
-
-- **认证**：云端登录、注册、当前用户恢复、退出登录；token 内存 + `localStorage` 持久化，并记录过期时间兜底。
-- **全局鉴权拦截**：HTTP 401 或业务码 `10002` 自动清 token、提示并跳转登录页；登录失败 `20002` 不会被误判为会话失效。
-- **项目**：项目列表、空状态、创建项目、项目详情、最近对话和项目概览。
-- **对话**：对话列表、搜索、新建对话、历史记录、对话详情。
-- **异步任务**：`202` 提交后在本地立即显示服务端 `task_id` 的等待卡；自动轮询并更新为执行中/完成/失败/取消。
-- **轮询保护**：首次 1.5 秒、递增退避、最长 5 秒间隔；终态、组件卸载或最长 180 秒后停止；超时后由用户手动继续查询。
-- **防重复提交**：存在未完成任务时禁用输入；后端返回 `30005` 时刷新当前对话，保留已有任务卡。
-- **错误体验**：字段错误贴近输入区域；`40001/40002/50000` 提供重试；任务错误使用纯文本展示。
-- **内容渲染**：Markdown、表格、任务列表、代码块、链接、行内/块级 KaTeX 公式；回答支持一键复制。
-- **响应式**：桌面三栏工作台；中小屏项目/对话侧栏抽屉；390×844 已实测。
-- **可访问性**：语义化按钮、表单标签、`aria-invalid`、对话框 `role`、焦点样式、`prefers-reduced-motion`。
-
-## 目录结构
-
-```text
-frontend/
-├─ src/
-│  ├─ api/                 # 统一请求层与按领域拆分的接口函数
-│  ├─ auth/                # 登录状态、路由守卫
-│  ├─ components/          # 布局、对话框、消息卡、输入框、Toast 等
-│  ├─ hooks/               # 任务轮询
-│  ├─ lib/                 # token、错误映射、格式化和校验
-│  ├─ pages/               # 登录、注册、项目、项目首页、对话、404
-│  ├─ styles/              # 设计变量、基础样式、各页面样式和响应式
-│  ├─ types/               # 接口数据的 TypeScript 类型
-│  ├─ App.tsx
-│  └─ main.tsx
-├─ .env.example
-├─ vite.config.ts
-└─ README.md
-```
-
-## 启动方式
+## 启动
 
 ```bash
 cd frontend
@@ -60,83 +33,77 @@ cp .env.example .env.local
 npm run dev
 ```
 
-开发服务器默认监听 `http://127.0.0.1:5173`，Vite 会把 `/api` 代理到 Java 后端 `http://127.0.0.1:8080`。
-
-### 本地模式
-
-```env
-VITE_APP_MODE=local
-VITE_API_BASE_URL=
-```
-
-- 不出现登录/注册路由，直接进入工作区。
-- 创建项目时表单会显示 **项目目录**，并提交 `local_path`，符合当前 Java 后端 local profile 的校验。
-- 该字段必须填写 Java 后端所在机器上真实存在的目录。
-
-### 云端模式
+开发服务器默认是 `http://127.0.0.1:5173`，`/api` 代理到
+`http://127.0.0.1:8080`。
 
 ```env
+# 云端：启用登录、Bearer、项目文件面板。
 VITE_APP_MODE=cloud
 VITE_API_BASE_URL=
+
+# 本地：不显示登录，创建项目时使用目录点选。
+# VITE_APP_MODE=local
 ```
 
-- 启用 `/login`、`/register`、`/auth/me`、`/auth/logout` 流程。
-- 请求会自动附带 `Authorization: Bearer <token>`。
-- Vite 环境变量在启动/构建时读取；切换模式后需要重启开发服务器。
-
-### 生产构建
+## 命令
 
 ```bash
 npm run typecheck
 npm run build
+
+# 本地固定夹具测试（按项目规则 tests/ 不提交）
+node --experimental-strip-types --test tests/frontend-core.test.mjs
 ```
 
-`dist/` 可以部署到与 Java 后端相同的域名下；若前后端分属不同域名，需要：
-
-1. 设置 `VITE_API_BASE_URL=https://your-java-backend`；
-2. 在 Java 后端配置允许前端域名的 CORS。
+测试使用 Node.js 内置测试运行器和 TypeScript type stripping，不增加测试框架依赖。
+建议使用 Node.js 22 或项目依赖所要求的更新版本。测试文件按仓库规则保留在本地。
 
 ## 接口映射
 
 | 场景 | 接口 |
 | --- | --- |
-| 注册 | `POST /api/auth/register` |
-| 登录 | `POST /api/auth/login` |
-| 当前用户 | `GET /api/auth/me` |
-| 退出 | `POST /api/auth/logout` |
-| 项目列表 | `GET /api/projects` |
-| 创建项目 | `POST /api/projects` |
-| 项目详情 | `GET /api/projects/{projectId}` |
-| 对话列表 | `GET /api/projects/{projectId}/conversations` |
-| 创建对话 | `POST /api/projects/{projectId}/conversations` |
-| 对话详情 | `GET /api/conversations/{conversationId}` |
-| 历史任务 | `GET /api/conversations/{conversationId}/turns` |
+| 登录 / 注册 / 当前用户 / 退出 | `/api/auth/*` |
+| 项目列表 / 创建 / 详情 | `/api/projects`、`/api/projects/{projectId}` |
+| 对话 | `/api/projects/{projectId}/conversations` |
 | 提交任务 | `POST /api/conversations/{conversationId}/turns` |
-| 查询任务 | `GET /api/conversations/{conversationId}/turns/{taskId}` |
+| 任务补偿查询 | `GET /api/conversations/{conversationId}/turns/{taskId}` |
+| 任务实时事件 | `GET /api/conversations/{conversationId}/turns/{taskId}/events` |
+| 云端目录 | `GET /api/projects/{projectId}/files/tree` |
+| 云端文本预览 | `GET /api/projects/{projectId}/files/content` |
+| 单文件下载 | `GET /api/projects/{projectId}/files/download` |
+| 项目 ZIP | `GET /api/projects/{projectId}/archive` |
+| 本地目录浏览 / 创建 | `GET/POST /api/local/directories` |
 
-所有接口都经过 `src/api/client.ts`。该层会同时检查：
+SSE 需要 Java 返回 `Content-Type: text/event-stream`。云端文件响应需要允许前端读取
+`Content-Disposition`。跨域部署时还需为以上接口和 `Authorization` 配置 CORS。
 
-- HTTP 状态是否为 2xx；
-- `Result<T>` 的 `code` 是否为 `0`；
-- 错误时抛出带有 `status / code / data` 的 `ApiError`；
-- 无需每个页面重复处理 `10002`。
+## 验证状态
 
-## 验收自查
+- 本地核心测试：8 项通过，覆盖中文跨字节、多帧/CRLF/多行 data、快照替换、重复序号、工具失败、
+  终态结果、空闲断线、安全下载链接和本地文件夹名校验。
+- TypeScript 静态检查通过。
+- 当前 Codex Windows 沙箱拒绝启动 TypeScript 7 与 Rolldown 的原生二进制，因此本次未能完成
+  `vite build` 和浏览器截图；需在普通 Node.js 22 开发环境执行类型检查、上述测试命令和 `npm run build`。
+- 真实 SSE、Java 文件接口和本机目录点选仍需由组长在前后端同一环境联调；仓库未加入假项目、
+  假目录、假回答、令牌或真实配置。
 
-- `npm run typecheck` 通过。
-- `npm run build` 通过。
-- 使用临时 mock API 实测：登录 → 项目 → 项目首页 → 对话 → 提交任务 → `RUNNING` → `COMPLETED`。
-- Markdown 表格、代码块、行内公式和块级公式均正常渲染。
-- 桌面 1440×960 与移动端 390×844 布局正常。
-- 401 + `10002` 时 token 被清除并自动跳转 `/login`。
-- 浏览器控制台无运行时错误。
+## 主要目录
 
-## 联调提醒
-
-前端按《接口文档》完成。以仓库当前 `master`（提交 `27c46b3`）为基线，联调前还需要后端补齐以下内容：
-
-- `GET /api/projects` 项目列表接口目前尚未实现，`ProjectController` 只有创建和详情。
-- `UserController` 的认证接口仍是不完整占位代码，需要成员三完成注册、登录、`me`、退出登录。
-- 若前端与 Java 不同源部署，需要补充 CORS 配置；使用 Vite 代理或同源静态部署时不需要。
-
-这些都位于后端职责范围，本前端目录没有写入任何假项目、假对话或假 Agent 回答。
+```text
+src/
+├─ api/
+│  ├─ turnEvents.ts          # 带 Bearer 的 SSE 握手
+│  ├─ files.ts               # 文件树、预览、Blob 下载
+│  └─ localDirectories.ts    # 本地目录浏览与创建
+├─ hooks/
+│  ├─ useTurnStream.ts       # 单任务连接、归并、有限重连
+│  └─ useProjectFiles.ts     # 文件缓存、去重、刷新与 LRU
+├─ lib/
+│  ├─ sseParser.ts           # 可独立测试的 SSE 帧解析
+│  ├─ turnEventReducer.ts    # 纯事件状态归并
+│  └─ protectedLinks.ts      # 严格本站下载链接识别
+├─ components/
+│  ├─ ProjectFilesPanel.tsx
+│  └─ DirectoryPicker.tsx
+└─ pages/ConversationPage.tsx
+```

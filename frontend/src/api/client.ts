@@ -12,14 +12,21 @@ interface RequestOptions {
   timeoutMs?: number
 }
 
-function endpoint(path: string): string {
+export function endpoint(path: string): string {
   const normalizedPath = path.startsWith('/') ? path : `/${path}`
   return `${API_BASE_URL}${normalizedPath}`
 }
 
-function emitAuthExpired(): void {
+export function emitAuthExpired(): void {
   clearToken()
   window.dispatchEvent(new CustomEvent(AUTH_EXPIRED_EVENT))
+}
+
+export function bearerHeaders(accept: string): Record<string, string> {
+  const headers: Record<string, string> = { Accept: accept }
+  const token = getToken()
+  if (token) headers.Authorization = `Bearer ${token}`
+  return headers
 }
 
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {

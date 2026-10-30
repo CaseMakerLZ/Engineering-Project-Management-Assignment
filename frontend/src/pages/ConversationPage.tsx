@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft,
   Clock3,
+  FolderTree,
   MessageSquareDashed,
   RefreshCw,
   RotateCcw,
@@ -16,13 +17,15 @@ import {
 import { ApiError, describeError, isResourceNotFound } from '../lib/errors'
 import { formatDateTime } from '../lib/format'
 import type { Conversation, CreateTurnResponse, Turn } from '../types/api'
+import type { TurnStreamState } from '../types/turnEvents'
+import { IS_CLOUD_MODE } from '../config'
 import { useProjectWorkspace } from '../components/ProjectWorkspaceLayout'
 import { Composer } from '../components/Composer'
 import { EmptyState } from '../components/EmptyState'
 import { isActiveStatus } from '../components/StatusPill'
 import { TurnCard } from '../components/TurnCard'
 import { useToast } from '../components/ToastProvider'
-import { useTurnPolling } from '../hooks/useTurnPolling'
+import { useTurnStream } from '../hooks/useTurnStream'
 
 function sortTurns(items: Turn[]): Turn[] {
   return [...items].sort((left, right) => {
@@ -46,21 +49,61 @@ function mergeTurns(current: Turn[], incoming: Turn[]): Turn[] {
   return sortTurns(merged)
 }
 
+function TurnStreamSession({
+  conversationId,
+  turn,
+  onUpdate,
+  onSettled,
+  registerReconnect,
+}: {
+  conversationId: string
+  turn: Turn
+  onUpdate: (taskId: string, state: TurnStreamState) => void
+  onSettled: (taskId: string) => void
+  registerReconnect: (taskId: string, reconnect: (() => void) | null) => void
+}) {
+  const { reconnect } = useTurnStream({
+    conversationId,
+    taskId: turn.task_id,
+    initialStatus: turn.status,
+    reconnectToken: 0,
+    onUpdate,
+    onSettled,
+  })
+
+  useEffect(() => {
+    registerReconnect(turn.task_id, reconnect)
+    return () => registerReconnect(turn.task_id, null)
+  }, [reconnect, registerReconnect, turn.task_id])
+
+  return null
+}
+
 export function ConversationPage() {
   const { conversationId = '' } = useParams()
-  const { project, refreshConversations } = useProjectWorkspace()
+  const {
+    project,
+    refreshConversations,
+    filesPanelOpen,
+    toggleFilesPanel,
+    notifyTaskStarted,
+    notifyTaskSettled,
+  } = useProjectWorkspace()
   const { pushToast } = useToast()
   const [conversation, setConversation] = useState<Conversation | null>(null)
   const [turns, setTurns] = useState<Turn[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [submitInFlight, setSubmitInFlight] = useState(false)
+  const [streamStates, setStreamStates] = useState<Record<string, TurnStreamState>>({})
   const [reloadVersion, setReloadVersion] = useState(0)
   const scrollRef = useRef<HTMLDivElement>(null)
   const initialScrollDoneRef = useRef(false)
   const forceScrollRef = useRef(false)
   const submittingRef = useRef(false)
   const mountedRef = useRef(true)
+  const reconnectRef = useRef(new Map<string, () => void>())
+  const startedTaskIdsRef = useRef(new Set<string>())
 
   useEffect(() => {
     mountedRef.current = true
@@ -75,6 +118,9 @@ export function ConversationPage() {
     setError(null)
     setConversation(null)
     setTurns([])
+    setStreamStates({})
+    reconnectRef.current.clear()
+    startedTaskIdsRef.current.clear()
     initialScrollDoneRef.current = false
 
     const loadConversation = async () => {
@@ -117,20 +163,49 @@ export function ConversationPage() {
   const busy = activeTaskIds.length > 0 || submitInFlight
   const lastTurnStatus = turns.at(-1)?.status
 
-  const handlePolledTurns = useCallback((incoming: Turn[]) => {
-    setTurns((current) => mergeTurns(current, incoming))
+  const handleStreamUpdate = useCallback((taskId: string, state: TurnStreamState) => {
+    setStreamStates((current) => ({ ...current, [taskId]: state }))
+    setTurns((current) =>
+      current.map((turn) =>
+        turn.task_id === taskId
+          ? {
+              ...turn,
+              status: state.status,
+              result: state.result ?? turn.result,
+              error: state.error ?? turn.error,
+            }
+          : turn,
+      ),
+    )
   }, [])
 
-  const handleSettled = useCallback(() => {
-    void refreshConversations()
-  }, [refreshConversations])
+  const handleStreamSettled = useCallback(
+    (taskId: string) => {
+      startedTaskIdsRef.current.delete(taskId)
+      notifyTaskSettled(taskId)
+      void refreshConversations()
+    },
+    [notifyTaskSettled, refreshConversations],
+  )
 
-  const polling = useTurnPolling({
-    conversationId: conversation?.conversation_id ?? null,
-    activeTaskIds,
-    onTurns: handlePolledTurns,
-    onSettled: handleSettled,
-  })
+  const registerReconnect = useCallback((taskId: string, reconnect: (() => void) | null) => {
+    if (reconnect) reconnectRef.current.set(taskId, reconnect)
+    else reconnectRef.current.delete(taskId)
+  }, [])
+
+  useEffect(() => {
+    activeTaskIds.forEach((taskId) => {
+      if (startedTaskIdsRef.current.has(taskId)) return
+      startedTaskIdsRef.current.add(taskId)
+      notifyTaskStarted(taskId)
+    })
+    const activeSet = new Set(activeTaskIds)
+    startedTaskIdsRef.current.forEach((taskId) => {
+      if (activeSet.has(taskId)) return
+      startedTaskIdsRef.current.delete(taskId)
+      notifyTaskSettled(taskId)
+    })
+  }, [activeTaskIds, notifyTaskSettled, notifyTaskStarted])
 
   useEffect(() => {
     const element = scrollRef.current
@@ -152,7 +227,18 @@ export function ConversationPage() {
         behavior: 'smooth',
       })
     }
-  }, [turns.length, lastTurnStatus, activeTaskIds.length])
+  }, [
+    turns.length,
+    lastTurnStatus,
+    activeTaskIds.length,
+    Object.values(streamStates).reduce(
+      (total, state) =>
+        total +
+        state.messages.reduce((messageTotal, message) => messageTotal + message.text.length, 0) +
+        state.tools.length,
+      0,
+    ),
+  ])
 
   const refreshHistory = useCallback(async () => {
     try {
@@ -190,6 +276,8 @@ export function ConversationPage() {
         if (mountedRef.current) {
           forceScrollRef.current = true
           setTurns((current) => mergeTurns(current, [pendingTurn]))
+          startedTaskIdsRef.current.add(pendingTurn.task_id)
+          notifyTaskStarted(pendingTurn.task_id)
           void refreshConversations()
         }
       } finally {
@@ -197,7 +285,7 @@ export function ConversationPage() {
         if (mountedRef.current) setSubmitInFlight(false)
       }
     },
-    [conversationId, refreshConversations],
+    [conversationId, notifyTaskStarted, refreshConversations],
   )
 
   const handleRetry = (prompt: string) => {
@@ -291,6 +379,17 @@ export function ConversationPage() {
           >
             <RefreshCw size={16} />
           </button>
+          {IS_CLOUD_MODE ? (
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={toggleFilesPanel}
+              aria-label={filesPanelOpen ? '收起项目文件' : '打开项目文件'}
+              title={filesPanelOpen ? '收起项目文件' : '打开项目文件'}
+            >
+              <FolderTree size={16} />
+            </button>
+          ) : null}
         </div>
       </header>
 
@@ -305,39 +404,45 @@ export function ConversationPage() {
             />
           ) : (
             turns.map((turn) => (
-              <TurnCard key={turn.task_id} turn={turn} busy={busy} onRetry={handleRetry} />
+              <TurnCard
+                key={turn.task_id}
+                turn={turn}
+                busy={busy}
+                onRetry={handleRetry}
+                streamState={streamStates[turn.task_id]}
+                onReconnect={() => reconnectRef.current.get(turn.task_id)?.()}
+              />
             ))
           )}
         </div>
       </div>
 
       <footer className="conversation-composer-area">
-        {polling.timedOut ? (
-          <div className="polling-notice">
-            <Clock3 size={15} />
-            <span>自动状态查询已停止（已达到最长等待时间），任务仍在服务端执行。</span>
-            <button type="button" onClick={polling.resumePolling}>
-              继续查询
-            </button>
-            <button type="button" onClick={() => void refreshHistory()}>
-              立即刷新
-            </button>
-          </div>
-        ) : null}
-        {polling.pollingError && !polling.timedOut ? (
-          <div className="polling-notice polling-notice-warn">
-            <RotateCcw size={15} />
-            <span>{polling.pollingError}</span>
-          </div>
-        ) : null}
         <Composer
           busy={busy}
+          busyLabel="任务在服务器执行，离开页面后仍可回来查看。完成后即可继续提问。"
           onSubmit={sendPrompt}
           onConflict={() => void refreshHistory()}
           autoFocus={turns.length === 0}
         />
         <p className="composer-disclaimer">Agent 可能产生不准确的内容，请在执行前核对关键结果。</p>
       </footer>
+      {conversation
+        ? activeTaskIds.map((taskId) => {
+            const turn = turns.find((item) => item.task_id === taskId)
+            if (!turn) return null
+            return (
+              <TurnStreamSession
+                key={taskId}
+                conversationId={conversation.conversation_id}
+                turn={turn}
+                onUpdate={handleStreamUpdate}
+                onSettled={handleStreamSettled}
+                registerReconnect={registerReconnect}
+              />
+            )
+          })
+        : null}
     </div>
   )
 }

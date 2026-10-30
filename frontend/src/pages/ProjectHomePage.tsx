@@ -17,7 +17,7 @@ import { ProjectGlyph } from '../components/ProjectGlyph'
 const STEPS = [
   { number: '01', title: '开启对话', text: '为不同目标建立独立上下文。' },
   { number: '02', title: '描述任务', text: '输入要分析、生成或执行的内容。' },
-  { number: '03', title: '检查结果', text: '等待异步执行完成并查看回答。' },
+  { number: '03', title: '检查结果', text: '查看实时输出、工具状态和最终回答。' },
 ]
 
 export function ProjectHomePage() {
@@ -43,6 +43,9 @@ export function ProjectHomePage() {
           <span className="eyebrow">PROJECT OVERVIEW</span>
           <h1>{project.name}</h1>
           <p>{project.description || '这个项目还没有描述。你仍然可以直接开始一段 Agent 对话。'}</p>
+          {!IS_CLOUD_MODE ? (
+            <p className="project-local-hint">本地项目文件请使用本机编辑器查看。</p>
+          ) : null}
           <div className="project-home-actions">
             <button type="button" className="btn btn-primary" onClick={openNewConversation}>
               <MessageSquarePlus size={17} />

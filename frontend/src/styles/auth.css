@@ -238,7 +238,7 @@
   justify-content: center;
   padding: 48px clamp(28px, 7vw, 110px);
   background:
-    radial-gradient(circle at 100% 0%, rgba(92, 77, 244, 0.055), transparent 30%),
+    radial-gradient(circle at 100% 0%, rgba(80, 104, 121, 0.055), transparent 30%),
     var(--paper);
 }
 
