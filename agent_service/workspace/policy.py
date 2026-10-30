@@ -136,6 +136,62 @@ def resolve_project_directory(
     return resolve_in_project(root, build_project_relative(user_id, project_id))
 
 
+def _lstat_or_none(path: Path) -> os.stat_result | None:
+    """取 ``lstat``，不存在返回 None，其它 IO 错误统一转成工作区不可用。"""
+
+    try:
+        return os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise WorkspaceError(WorkspaceErrorCode.WORKSPACE_UNAVAILABLE, "无法检查项目路径") from exc
+
+
+def ensure_project_directory(
+    workspace_root: str | Path, user_id: str | None, project_id: str | None
+) -> Path:
+    """逐层创建项目目录并返回它；只补缺失目录，不删除、不清空任何内容。
+
+    不用 ``mkdir(parents=True)``：递归创建会一次性穿过中间层，中间某一层如果
+    在检查之后被换成符号链接，目录就会建到工作区外面。这里一层一层地
+    "先 lstat、缺了就 mkdir、建完再 lstat"，每层都拒绝链接和非目录。
+
+    重复调用是幂等(幂等：同一个操作执行一次和多次效果一样，重复执行不产生副作用)的：已存在的目录保持原样，已有文件和 ``.git`` 都不会被触碰
+    （本函数根本不进入项目目录内部）。
+    """
+
+    root = Path(workspace_root).expanduser()
+    if not root.is_dir():
+        raise WorkspaceError(WorkspaceErrorCode.WORKSPACE_UNAVAILABLE, "工作区根目录不存在")
+
+    current = root
+    for part in build_project_relative(user_id, project_id).split("/"):
+        current = current / part
+        info = _lstat_or_none(current)
+        if info is None:
+            try:
+                os.mkdir(current)
+            except FileExistsError:
+                # 并发创建或刚被别人建好，下面统一按实际类型再审一次。
+                pass
+            except OSError as exc:
+                raise WorkspaceError(
+                    WorkspaceErrorCode.WORKSPACE_UNAVAILABLE, "无法创建项目工作区"
+                ) from exc
+            info = _lstat_or_none(current)
+            if info is None:
+                raise WorkspaceError(
+                    WorkspaceErrorCode.WORKSPACE_UNAVAILABLE, "项目工作区创建后不可见"
+                )
+        if stat.S_ISLNK(info.st_mode):
+            raise WorkspaceError(WorkspaceErrorCode.PATH_FORBIDDEN, "不接受符号链接")
+        if not stat.S_ISDIR(info.st_mode):
+            raise WorkspaceError(
+                WorkspaceErrorCode.WORKSPACE_UNAVAILABLE, "项目工作区路径被非目录占用"
+            )
+    return current
+
+
 def normalize_path(raw: str | None) -> str:
     """把外部传入的项目内相对路径规范化成 ``""``（根）或 ``"a/b/c"``。
 
@@ -177,10 +233,17 @@ def normalize_path(raw: str | None) -> str:
 
 
 def _is_excluded_dir(name: str) -> bool:
+    """判断目录名是否属于排除名单（依赖、缓存、构建产物、版本库元数据）。"""
+
     return name.lower() in _EXCLUDED_DIR_NAMES
 
 
 def _is_excluded_file(name: str) -> bool:
+    """判断文件名是否属于排除名单（凭据、私钥、本地数据库）。
+
+    ``.env`` 系列整体拒绝，但提交进仓库的模板（``.env.example`` 等）放行。
+    """
+
     lower = name.lower()
     if lower in _ENV_TEMPLATE_NAMES:
         return False

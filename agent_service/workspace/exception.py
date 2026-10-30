@@ -26,6 +26,7 @@ class WorkspaceErrorCode(str, Enum):
     PATH_FORBIDDEN = "PATH_FORBIDDEN"
     PROJECT_BUSY = "PROJECT_BUSY"
     CURSOR_EXPIRED = "CURSOR_EXPIRED"
+    DIRECTORY_TOO_LARGE = "DIRECTORY_TOO_LARGE"
     PREVIEW_TOO_LARGE = "PREVIEW_TOO_LARGE"
     PREVIEW_UNSUPPORTED = "PREVIEW_UNSUPPORTED"
     DOWNLOAD_TOO_LARGE = "DOWNLOAD_TOO_LARGE"
@@ -51,6 +52,8 @@ class WorkspaceError(ValueError):
         details: dict[str, Any] | None = None,
         cause: BaseException | None = None,
     ) -> None:
+        """保存错误码与安全文案，``cause`` 只用于服务端排查、不对外返回。"""
+
         super().__init__(message)
         self.code = code.value if isinstance(code, Enum) else str(code)
         self.message = message

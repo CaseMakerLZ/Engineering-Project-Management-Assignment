@@ -35,6 +35,11 @@ class Settings:
     # 云端使用受控父目录，项目目录由 project_id 选择。
     workspace_root: str = "."
     execution_mode: str = "local"
+    # 目录浏览的服务端限制（组长说明 §4.1 的起步值）。
+    # 每页默认 100、最大 200；单目录扫描上限 5000 项，达到即报错而不是截断。
+    workspace_page_size: int = 100
+    workspace_max_page_size: int = 200
+    workspace_max_scan_entries: int = 5000
 
     @classmethod
     def from_environment(cls, config_path: str | Path | None = None) -> "Settings":
@@ -57,6 +62,7 @@ class Settings:
         storage = _section(toml_values, "storage")
         runtime = _section(toml_values, "runtime")
         cloud = _section(toml_values, "cloud")
+        workspace = _section(toml_values, "workspace")
 
         execution_mode = _string_setting(
             "AGENT_SERVICE_EXECUTION_MODE", runtime.get("mode"), environment_fallback, "local"
@@ -100,10 +106,22 @@ class Settings:
             ),
             workspace_root=workspace_root,
             execution_mode=execution_mode,
+            workspace_page_size=_int_setting(
+                "AGENT_SERVICE_WORKSPACE_PAGE_SIZE", workspace.get("page_size"), environment_fallback, 100
+            ),
+            workspace_max_page_size=_int_setting(
+                "AGENT_SERVICE_WORKSPACE_MAX_PAGE_SIZE", workspace.get("max_page_size"), environment_fallback, 200
+            ),
+            workspace_max_scan_entries=_int_setting(
+                "AGENT_SERVICE_WORKSPACE_MAX_SCAN_ENTRIES",
+                workspace.get("max_scan_entries"), environment_fallback, 5000,
+            ),
         )
 
 
 def _load_toml(config_path: Path) -> dict[str, Any]:
+    """读取 TOML 主配置；文件不存在返回空字典，不创建文件也不报错。"""
+
     if not config_path.is_file():
         return {}
     with config_path.open("rb") as file:
@@ -114,6 +132,8 @@ def _load_toml(config_path: Path) -> dict[str, Any]:
 
 
 def _section(values: dict[str, Any], name: str) -> dict[str, Any]:
+    """取出一个配置段；缺失或显式为空都当作空段，类型不对直接报错。"""
+
     section = values.get(name, {})
     if section is None:
         return {}
@@ -123,6 +143,8 @@ def _section(values: dict[str, Any], name: str) -> dict[str, Any]:
 
 
 def _resolve_path(value: str | None, base_dir: Path) -> str | None:
+    """把配置里的相对路径按配置文件所在目录解析成绝对路径。"""
+
     if value is None:
         return None
     path = Path(value).expanduser()
@@ -132,27 +154,37 @@ def _resolve_path(value: str | None, base_dir: Path) -> str | None:
 
 
 def _environment_value(name: str, legacy_env: dict[str, str]) -> str | None:
+    """取环境变量值；没有时回退到调用方传入的兼容映射。"""
+
     if name in os.environ:
         return os.environ[name]
     return legacy_env.get(name)
 
 
 def _string_setting(name: str, toml_value: Any, legacy_env: dict[str, str], default: str) -> str:
+    """读取字符串配置：TOML 优先，其次环境变量，最后默认值。"""
+
     value = toml_value if toml_value is not None else _environment_value(name, legacy_env)
     return default if value is None or value == "" else str(value)
 
 
 def _optional_string_setting(name: str, toml_value: Any, legacy_env: dict[str, str]) -> str | None:
+    """读取可为空的字符串配置；空串按未配置处理，返回 None。"""
+
     value = toml_value if toml_value is not None else _environment_value(name, legacy_env)
     return None if value is None or value == "" else str(value)
 
 
 def _int_setting(name: str, toml_value: Any, legacy_env: dict[str, str], default: int) -> int:
+    """读取整数配置；空值用默认值，非数字字符串会直接抛 ValueError。"""
+
     value = toml_value if toml_value is not None else _environment_value(name, legacy_env)
     return default if value is None or value == "" else int(value)
 
 
 def _float_setting(name: str, toml_value: Any, legacy_env: dict[str, str], default: float) -> float:
+    """读取浮点配置；空值用默认值，非数字字符串会直接抛 ValueError。"""
+
     value = toml_value if toml_value is not None else _environment_value(name, legacy_env)
     return default if value is None or value == "" else float(value)
 
@@ -160,6 +192,8 @@ def _float_setting(name: str, toml_value: Any, legacy_env: dict[str, str], defau
 def _path_setting(
     name: str, toml_value: Any, legacy_env: dict[str, str], default: str, config_dir: Path
 ) -> str:
+    """读取路径配置并解析成绝对路径；相对路径以配置文件所在目录为基准。"""
+
     value = toml_value if toml_value is not None else _environment_value(name, legacy_env)
     resolved = _resolve_path(str(value) if value not in (None, "") else default, config_dir)
     assert resolved is not None
