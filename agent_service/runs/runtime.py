@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 import sqlite3
+from functools import wraps
 from typing import Any, Callable, Protocol
 
 from agent.agent import Agent
@@ -191,6 +192,11 @@ class CurrentAgentRuntime:
             memory_before_created_at=created_at,
             memory_run_id=run_id,
         )
+        if self.settings.execution_mode.lower() == "cloud":
+            # Git 元数据只由服务端维护；文件工具不能读取/改写它（含 Windows 大小写）。
+            for tool in registry.get_all():
+                if tool.name in {"read_text_file", "write_text_file", "edit_text_file", "list_directory", "search_text"}:
+                    tool.function = _protect_git_metadata(tool.function)
         executor = ToolExecutor(registry)
         loop = AgentLoop(llm, registry, executor)
         agent = Agent(loop)
@@ -266,3 +272,15 @@ def _message_to_context(message: AgentMessage) -> dict[str, Any]:
         MessageType.TOOL_RESULT: "tool_result",
     }
     return {"role": role_by_type[message.type], "content": message.content}
+
+
+def _protect_git_metadata(function):
+    """不改变工具参数，只拒绝模型直接指定版本库内部路径。"""
+    @wraps(function)
+    def protected(**kwargs):
+        path = str(kwargs.get("file", kwargs.get("directory", "."))).replace("\\", "/")
+        if any(part.split(":", 1)[0].rstrip(" .").casefold() == ".git"
+               for part in path.split("/")):
+            raise ToolError(ToolErrorCode.INVALID_ARGUMENT, "不能访问服务端版本记录目录")
+        return function(**kwargs)
+    return protected

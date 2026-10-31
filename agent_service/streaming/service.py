@@ -185,7 +185,7 @@ class RunEvents:
             self._runs[run_id].stream_error = fields
             self._publish(run_id, "stream.error", fields)
 
-    def subscribe(self, run: Run) -> EventSubscription:
+    def subscribe(self, run: Run, *, warnings: list[dict[str, str]] | None = None) -> EventSubscription:
         """不 await 地捕获副本并登记独立队列；不会漏掉副本之后的增量。"""
         if len(self._subscribers) >= self.max_subscribers or sum(
             sub.run_id == run.run_id for sub in self._subscribers
@@ -205,11 +205,18 @@ class RunEvents:
                 status=run.status, result=run.result if run.status == RunStatus.COMPLETED else None,
                 error=PUBLIC_FAILURE if run.status == RunStatus.FAILED else None,
             )
+            if warnings:
+                visible.warnings = warnings[:10]
+            # Git 告警同时落在最终结果中；运行内存过期后也能恢复这条固定提示。
+            if (not visible.warnings and run.result
+                    and run.result.endswith("提示：文件已更新，但本次版本记录未保存。")):
+                visible.warnings = [{"code": "VERSION_SAVE_FAILED",
+                                     "message": "文件已更新，但本次版本记录未保存"}]
             first = self._event(run.run_id, "run.snapshot", visible.sequence, {
                 "status": visible.status,
                 "messages": [{"message_id": key, "text": value} for key, value in visible.messages.items()],
                 "active_tool": dict(visible.active_tool) if visible.active_tool else None,
-                "files": [], "warnings": [],
+                "files": [], "warnings": list(visible.warnings),
                 "result": visible.result, "error": visible.error,
             })
         self.encode(first)  # 超大响应在 HTTP 握手前拒绝，不留下订阅名额。
@@ -220,6 +227,15 @@ class RunEvents:
     def unsubscribe(self, subscription: EventSubscription) -> None:
         """释放一个页面的连接名额，不碰任务状态和执行协程。"""
         self._subscribers.discard(subscription)
+
+    def warning(self, run_id: str, code: str, message: str) -> None:
+        """只接服务端固定告警，最多保存十条；不改变任务成功/失败状态。"""
+        visible = self._runs[run_id]
+        if visible.status != RunStatus.RUNNING or len(visible.warnings) >= 10:
+            return
+        fields = {"code": code, "message": message}
+        visible.warnings.append(fields)
+        self._publish(run_id, "stream.warning", fields)
 
     def tool_started(self, run_id: str, call_id: str, tool_name: str) -> None:
         """工具实际执行前通知名称；只留当前工具，重连不再显示空白等待。"""

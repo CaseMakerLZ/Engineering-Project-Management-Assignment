@@ -54,6 +54,10 @@ class Settings:
     workspace_archive_timeout_seconds: float = 60.0
     workspace_max_concurrent_archives: int = 1
     workspace_archive_temp_dir: str = ""
+    # Git 只用于云端项目版本，不开放任意命令或远程推送。
+    workspace_git_timeout_seconds: float = 30.0
+    workspace_git_max_output_bytes: int = 1_048_576
+    workspace_git_max_file_bytes: int = 20_971_520
 
     @classmethod
     def from_environment(cls, config_path: str | Path | None = None) -> "Settings":
@@ -165,6 +169,18 @@ class Settings:
             workspace_archive_temp_dir=_string_setting(
                 "AGENT_SERVICE_WORKSPACE_ARCHIVE_TEMP_DIR",
                 workspace.get("archive_temp_dir"), environment_fallback, "",
+            ),
+            workspace_git_timeout_seconds=_float_setting(
+                "AGENT_SERVICE_GIT_TIMEOUT_SECONDS", workspace.get("git_timeout_seconds"),
+                environment_fallback, 30.0,
+            ),
+            workspace_git_max_output_bytes=_int_setting(
+                "AGENT_SERVICE_GIT_MAX_OUTPUT_BYTES", workspace.get("git_max_output_bytes"),
+                environment_fallback, 1_048_576,
+            ),
+            workspace_git_max_file_bytes=_int_setting(
+                "AGENT_SERVICE_GIT_MAX_FILE_BYTES", workspace.get("git_max_file_bytes"),
+                environment_fallback, 20_971_520,
             ),
         )
 

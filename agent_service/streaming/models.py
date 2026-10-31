@@ -20,3 +20,4 @@ class VisibleRun:
     stream_error: dict[str, Any] | None = None
     # 只保存当前正在执行的一个工具；顺序执行结束后清空，不累计完整调用历史。
     active_tool: dict[str, str] | None = None
+    warnings: list[dict[str, str]] = field(default_factory=list)

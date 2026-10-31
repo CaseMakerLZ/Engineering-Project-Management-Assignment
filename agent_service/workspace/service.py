@@ -7,6 +7,9 @@
   ``GET /api/internal/projects/{projectId}/files/tree``。
 
 未实现（后续步骤按契约再补，不提前做）：文本预览、单文件下载、项目压缩、Git。
+
+后续实现补充：上述预览、单文件/ZIP 下载及云端 Git 收尾现在均已接入；
+原阶段说明保留，实际入口见 read_text_preview/open_file_download/prepare_archive/finish_run。
 """
 
 import base64
@@ -15,7 +18,6 @@ import hashlib
 import hmac
 import json
 import os
-import shutil
 import stat
 import tempfile
 import threading
@@ -47,6 +49,7 @@ from .policy import (
     open_project_directory,
     resolve_project_directory,
 )
+from .versions import ProjectVersions
 
 # 游标有效期：过期必须重读第一页。文档未规定具体时长，取 15 分钟。
 _CURSOR_TTL_SECONDS = 900
@@ -120,10 +123,12 @@ class DownloadHandle:
         """按块产出文件内容；结束时关闭句柄并归还下载名额（可重复调用关闭）。"""
 
         try:
-            while True:
-                chunk = self.stream.read(_DOWNLOAD_CHUNK_BYTES)
+            remaining = self.size_bytes
+            while remaining:
+                chunk = self.stream.read(min(_DOWNLOAD_CHUNK_BYTES, remaining))
                 if not chunk:
-                    break
+                    raise OSError("下载期间文件被缩短")
+                remaining -= len(chunk)
                 yield chunk
         finally:
             self.close()
@@ -154,12 +159,15 @@ class ArchiveHandle:
     content_disposition: str
     release: Callable[[], None]
     _closed: bool = False
+    stream: BinaryIO | None = None
 
     def iter_chunks(self) -> Iterator[bytes]:
         """按块产出 ZIP 字节；结束时删除临时文件并归还名额（可重复调用关闭）。"""
 
         try:
-            with self.path.open("rb") as stream:
+            # 持有发送使用的同一个句柄；网络失败清理时也能明确关闭它。
+            self.stream = self.path.open("rb")
+            with self.stream as stream:
                 while True:
                     chunk = stream.read(_DOWNLOAD_CHUNK_BYTES)
                     if not chunk:
@@ -175,9 +183,13 @@ class ArchiveHandle:
             return
         self._closed = True
         try:
-            self.path.unlink(missing_ok=True)
+            if self.stream is not None:
+                self.stream.close()
         finally:
-            self.release()
+            try:
+                self.path.unlink(missing_ok=True)
+            finally:
+                self.release()
 
 
 @dataclass(slots=True)
@@ -268,8 +280,48 @@ class WorkspaceService:
         root = self._workspace_root()
         owner_id = self._project_owner(project_id)
         # 创建与检查在同一处完成：逐层 lstat/mkdir，任何一层是链接都拒绝。
-        ensure_project_directory(root, owner_id, project_id)
+        lease = self.usage.acquire(project_id, "prepare")
+        if lease is None:
+            raise WorkspaceError(WorkspaceErrorCode.PROJECT_BUSY, "项目正在使用，请稍后再试")
+        try:
+            project = ensure_project_directory(root, owner_id, project_id)
+            ProjectVersions(self.settings).prepare(project)
+        finally:
+            self.usage.release(lease)
         return WorkspaceStatus(project_id=project_id, ready=True)
+
+    def finish_run(self, project_id: str, run_id: str, result: str,
+                   written_paths: list[str], max_result_bytes: int = 256_000) -> tuple[str, bool]:
+        """成功运行后保存版本并附可信下载链接；版本失败不撤回已写文件。"""
+        root = self._existing_project_root(self._workspace_root(), self._project_owner(project_id), project_id)
+        version_saved = True
+        try:
+            ProjectVersions(self.settings).save(root, self._iter_exportable_files(root), run_id)
+        except Exception:
+            version_saved = False
+        links = []
+        warning = "\n\n提示：文件已更新，但本次版本记录未保存。" if not version_saved else ""
+        # 回答已接近显示上限时不再附加链接，避免附属信息把有效回答变成任务失败。
+        prefix = "\n\n下载本轮文件（当前内容）：\n"
+        for path in dict.fromkeys(written_paths):
+            if len(links) >= 20:
+                break
+            try:
+                stream, info = open_export_file(root, path)
+                stream.close()
+                if info.st_size > self.settings.workspace_max_download_bytes:
+                    continue
+            except (WorkspaceError, OSError):
+                continue
+            label = "".join("\\" + c if c in "\\`*_{}[]()<>!" else c for c in path)
+            link = f"- [{label}](/api/projects/{quote(project_id, safe='')}/files/download?path={quote(path, safe='')})"
+            if len((result + prefix + "\n".join([*links, link]) + warning).encode("utf-8")) <= max_result_bytes:
+                links.append(link)
+        if links:
+            result += "\n\n下载本轮文件（当前内容）：\n" + "\n".join(links)
+        if warning and len((result + warning).encode("utf-8")) <= max_result_bytes:
+            result += warning
+        return result, version_saved
 
     # ---------------- 目录浏览 ----------------
 
@@ -548,15 +600,38 @@ class WorkspaceService:
                             raise WorkspaceError(
                                 WorkspaceErrorCode.ARCHIVE_TOO_LARGE, "项目总字节超过上限"
                             )
-                        # 边读边写，不把文件整块读进内存。
+                        # 按实际读到的每块累计，不只信打开瞬间的文件大小。
+                        input_bytes -= info.st_size
                         with archive.open(relative, "w") as target:
-                            shutil.copyfileobj(stream, target, _DOWNLOAD_CHUNK_BYTES)
+                            while True:
+                                if time.monotonic() - started > timeout:
+                                    raise WorkspaceError(
+                                        WorkspaceErrorCode.WORKSPACE_UNAVAILABLE, "打包超时，已取消"
+                                    )
+                                chunk = stream.read(min(_DOWNLOAD_CHUNK_BYTES, max_input - input_bytes + 1))
+                                if not chunk:
+                                    break
+                                input_bytes += len(chunk)
+                                if input_bytes > max_input:
+                                    raise WorkspaceError(
+                                        WorkspaceErrorCode.ARCHIVE_TOO_LARGE, "项目总字节超过上限"
+                                    )
+                                target.write(chunk)
+                                if archive.fp.tell() > max_output:
+                                    raise WorkspaceError(
+                                        WorkspaceErrorCode.ARCHIVE_TOO_LARGE, "ZIP 大小超过上限"
+                                    )
                     finally:
                         stream.close()
                     if archive_path.stat().st_size > max_output:
                         raise WorkspaceError(
                             WorkspaceErrorCode.ARCHIVE_TOO_LARGE, "ZIP 大小超过上限"
                         )
+            # 空 ZIP 和关闭时新增的目录记录也必须计算在内。
+            if archive_path.stat().st_size > max_output:
+                raise WorkspaceError(WorkspaceErrorCode.ARCHIVE_TOO_LARGE, "ZIP 大小超过上限")
+            if time.monotonic() - started > timeout:
+                raise WorkspaceError(WorkspaceErrorCode.WORKSPACE_UNAVAILABLE, "打包超时，已取消")
         except BaseException:
             archive_path.unlink(missing_ok=True)
             raise
@@ -569,36 +644,41 @@ class WorkspaceService:
         跳过（它们不属于"公开导出"范围，也不应让整次打包失败）。
         """
 
-        for current, dirnames, filenames in os.walk(project_root, followlinks=False):
-            current_path = Path(current)
-            relative_dir = current_path.relative_to(project_root).as_posix()
-            prefix = "" if relative_dir == "." else f"{relative_dir}/"
-            # 就地过滤目录名，os.walk 因此不会进入被排除的目录。
-            dirnames[:] = [
-                name for name in dirnames if is_exportable_dir(f"{prefix}{name}")
-            ]
-            for name in filenames:
-                relative = f"{prefix}{name}"
-                if not is_exportable(relative):
-                    continue
-                try:
-                    info = os.lstat(current_path / name)
-                except OSError:
-                    continue
-                if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
-                    continue
-                if info.st_nlink > 1:
-                    # 多硬链接可能指向项目外，与单文件导出保持同一处置。
-                    continue
-                yield relative
+        # 受控且有总扫描上限；空目录很多也不能无限走下去。
+        pending = [""]
+        scanned = 0
+        started = time.monotonic()
+        while pending:
+            relative_dir = pending.pop()
+            with open_project_directory(project_root, relative_dir) as directory:
+                with os.scandir(directory) as entries:
+                    for entry in entries:
+                        scanned += 1
+                        if scanned > self.settings.workspace_max_scan_entries:
+                            raise WorkspaceError(WorkspaceErrorCode.ARCHIVE_TOO_LARGE, "项目扫描条目超过上限")
+                        if time.monotonic() - started > self.settings.workspace_archive_timeout_seconds:
+                            raise WorkspaceError(WorkspaceErrorCode.WORKSPACE_UNAVAILABLE, "项目扫描超时")
+                        relative = f"{relative_dir}/{entry.name}" if relative_dir else entry.name
+                        info = entry.stat(follow_symlinks=False)
+                        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+                            continue
+                        if stat.S_ISDIR(info.st_mode) and is_exportable_dir(relative):
+                            pending.append(relative)
+                        elif stat.S_ISREG(info.st_mode) and info.st_nlink <= 1 and is_exportable(relative):
+                            yield relative
 
     def _archive_temp_root(self) -> Path:
         """返回打包临时目录：专用子目录，绝不放进项目内（避免递归打包）。"""
 
         configured = self.settings.workspace_archive_temp_dir.strip()
-        if configured:
-            return Path(configured).expanduser()
-        return Path(tempfile.gettempdir()) / "agent-service-archives"
+        selected = (Path(configured).expanduser() if configured
+                    else Path(tempfile.gettempdir()) / "agent-service-archives").resolve()
+        workspace = self._workspace_root().resolve()
+        # 不允许把 ZIP 临时目录配置到任何用户项目中。
+        users = workspace / "users"
+        if selected == users or selected.is_relative_to(users):
+            raise WorkspaceError(WorkspaceErrorCode.WORKSPACE_UNAVAILABLE, "打包临时目录不能位于项目区域")
+        return selected
 
     # ---------------- 内部：路径与归属 ----------------
 

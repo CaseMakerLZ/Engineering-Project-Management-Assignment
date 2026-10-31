@@ -40,6 +40,7 @@ def create_app(
     )
     # 工作区准备与任务运行共用同一个仓储：项目归属只有一份可信来源。
     workspace_service = WorkspaceService(settings, repository)
+    run_service.workspace = workspace_service
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:

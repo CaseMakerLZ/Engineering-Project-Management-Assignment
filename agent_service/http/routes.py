@@ -12,6 +12,7 @@ from ..streaming.exception import EventLimitError
 from ..workspace.exception import WorkspaceError, WorkspaceErrorCode
 from ..workspace.service import WorkspaceService
 from .schemas import CreateRunRequest, HealthResponse, RunMessagesResponse, RunStatusResponse
+from .responses import DownloadResponse
 
 
 # 工作区错误码到 HTTP 状态码的翻译表，对应 Java 说明第 6.5 节。
@@ -159,8 +160,8 @@ def create_router(
             "X-Content-Type-Options": "nosniff",
             "Cache-Control": "no-store",
         }
-        return StreamingResponse(
-            handle.iter_chunks(),
+        return DownloadResponse(
+            handle,
             media_type="application/octet-stream",
             headers=headers,
         )
@@ -187,8 +188,8 @@ def create_router(
             "X-Content-Type-Options": "nosniff",
             "Cache-Control": "no-store",
         }
-        return StreamingResponse(
-            handle.iter_chunks(), media_type="application/zip", headers=headers
+        return DownloadResponse(
+            handle, media_type="application/zip", headers=headers
         )
 
     @router.post(
@@ -208,6 +209,8 @@ def create_router(
             run = run_service.create(request)
         except EventLimitError as exc:
             raise HTTPException(503, detail={"code": exc.code, "message": str(exc)}) from exc
+        except WorkspaceError as exc:
+            raise _workspace_http_error(exc) from exc
         background_tasks.add_task(run_service.execute, run.run_id)
         #下面一行返回是返回给java调用端的
         return RunStatusResponse(run_id=run.run_id, status=run.status)
@@ -238,8 +241,18 @@ def create_router(
             }) from exc
         if run is None:
             raise HTTPException(404, detail="run not found")
+        warnings = None
+        if run.status in {"COMPLETED", "FAILED", "CANCELLED"}:
+            try:
+                messages = await run_in_threadpool(repository.list_messages, run_id)
+                warnings = [message.content for message in messages
+                            if message.message_type == "warning" and isinstance(message.content, dict)
+                            and message.content.get("code") == "VERSION_SAVE_FAILED"][:10]
+            except Exception as exc:
+                raise HTTPException(503, detail={"code": "STORAGE_UNAVAILABLE",
+                                               "message": "任务告警暂不可用"}) from exc
         try:
-            subscription = run_service.events.subscribe(run)
+            subscription = run_service.events.subscribe(run, warnings=warnings)
         except EventLimitError as exc:
             raise HTTPException(
                 429 if exc.code == "SUBSCRIPTION_LIMIT" else 503,
