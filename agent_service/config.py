@@ -35,6 +35,8 @@ class Settings:
     # 云端使用受控父目录，项目目录由 project_id 选择。
     workspace_root: str = "."
     execution_mode: str = "local"
+    # 单个 Python 进程允许同时运行的 Agent 数量；满载时直接拒绝新任务，不建立无限等待队列。
+    max_concurrent_runs: int = 4
     # 目录浏览的服务端限制（组长说明 §4.1 的起步值）。
     # 每页默认 100、最大 200；单目录扫描上限 5000 项，达到即报错而不是截断。
     workspace_page_size: int = 100
@@ -124,6 +126,12 @@ class Settings:
             ),
             workspace_root=workspace_root,
             execution_mode=execution_mode,
+            max_concurrent_runs=_int_setting(
+                "AGENT_SERVICE_MAX_CONCURRENT_RUNS",
+                runtime.get("max_concurrent_runs"),
+                environment_fallback,
+                4,
+            ),
             workspace_page_size=_int_setting(
                 "AGENT_SERVICE_WORKSPACE_PAGE_SIZE", workspace.get("page_size"), environment_fallback, 100
             ),

@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -15,6 +16,12 @@ from ..workspace.exception import WorkspaceError, WorkspaceErrorCode
 from tools.filesystem.FileToolExecutionOutput import WriteFileOutput, EditFileOutput
 
 
+class RunCapacityError(RuntimeError):
+    """当前进程的 Agent 执行名额已用完；调用方应稍后重试。"""
+
+    code = "RUN_CAPACITY_EXCEEDED"
+
+
 def _now() -> datetime:
     """返回当前的 UTC 时间。"""
     return datetime.now(timezone.utc)
@@ -28,6 +35,7 @@ class RunService:
         runtime: AgentRuntime,
         events: RunEvents | None = None,
         workspace: WorkspaceService | None = None,
+        max_concurrent_runs: int | None = None,
     ) -> None:
         self.repository = repository
         self.runtime = runtime
@@ -36,6 +44,12 @@ class RunService:
         self._executing: set[str] = set()
         self.workspace = workspace
         self._project_leases: dict[str, object] = {}
+        configured_limit = max_concurrent_runs
+        if configured_limit is None:
+            configured_limit = getattr(getattr(runtime, "settings", None), "max_concurrent_runs", 4)
+        self._run_slots = threading.BoundedSemaphore(max(1, int(configured_limit)))
+        self._run_slot_lock = threading.Lock()
+        self._run_slot_holders: set[str] = set()
 
     def create(self, request: CreateRunRequest) -> Run:
         run = Run(
@@ -51,14 +65,19 @@ class RunService:
             error=None,
             created_at=_now(),
         )
+        if not self._run_slots.acquire(blocking=False):
+            raise RunCapacityError("Agent 当前正在处理较多任务，请稍后重试")
+        with self._run_slot_lock:
+            self._run_slot_holders.add(run.run_id)
+        slot_acquired = True
         lease = None
-        if self.workspace is not None and self.workspace.settings.execution_mode.lower() == "cloud":
-            if not run.project_id:
-                raise WorkspaceError(WorkspaceErrorCode.INVALID_PATH, "云端任务必须指定项目")
-            lease = self.workspace.usage.acquire(run.project_id, "agent")
-            if lease is None:
-                raise WorkspaceError(WorkspaceErrorCode.PROJECT_BUSY, "项目正在运行或打包")
         try:
+            if self.workspace is not None and self.workspace.settings.execution_mode.lower() == "cloud":
+                if not run.project_id:
+                    raise WorkspaceError(WorkspaceErrorCode.INVALID_PATH, "云端任务必须指定项目")
+                lease = self.workspace.usage.acquire(run.project_id, "agent")
+                if lease is None:
+                    raise WorkspaceError(WorkspaceErrorCode.PROJECT_BUSY, "项目正在运行或打包")
             self.events.register(run.run_id)
             saved = self.repository.create_run(run)
             if lease is not None:
@@ -66,6 +85,8 @@ class RunService:
             return saved
         except BaseException:
             self.events.discard(run.run_id)
+            if slot_acquired:
+                self._release_run_slot(run.run_id)
             if lease is not None:
                 self.workspace.usage.release(lease)
             raise
@@ -88,6 +109,15 @@ class RunService:
             lease = self._project_leases.pop(run_id, None)
             if lease is not None:
                 self.workspace.usage.release(lease)
+            self._release_run_slot(run_id)
+
+    def _release_run_slot(self, run_id: str) -> None:
+        """归还任务名额；重复归还不会增加可用名额。"""
+        with self._run_slot_lock:
+            if run_id not in self._run_slot_holders:
+                return
+            self._run_slot_holders.remove(run_id)
+        self._run_slots.release()
 
     async def _execute(self, run_id: str) -> None:
         """事件只通知已经保存的状态；数据库错误仍向上抛出供服务端诊断。"""

@@ -37,6 +37,7 @@ def create_app(
         # Runtime 和 RunService 共用同一个仓储，ContextBuilder 才能读取
         # 当前项目/对话的历史，并把实际上下文快照保存回同一条 agent_run。
         CurrentAgentRuntime(settings, repository),
+        max_concurrent_runs=settings.max_concurrent_runs,
     )
     # 工作区准备与任务运行共用同一个仓储：项目归属只有一份可信来源。
     workspace_service = WorkspaceService(settings, repository)

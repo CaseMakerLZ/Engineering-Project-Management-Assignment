@@ -6,7 +6,7 @@ from starlette.concurrency import run_in_threadpool
 
 from ..config import Settings
 from ..runs.models import Run, RunMessage
-from ..runs.service import RunService
+from ..runs.service import RunCapacityError, RunService
 from ..storage.repository import RunRepository
 from ..streaming.exception import EventLimitError
 from ..workspace.exception import WorkspaceError, WorkspaceErrorCode
@@ -207,6 +207,11 @@ def create_router(
         # 先保存任务并立即返回 ID，耗时的 Agent 工作放到后台执行。
         try:
             run = run_service.create(request)
+        except RunCapacityError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={"code": exc.code, "message": str(exc)},
+            ) from exc
         except EventLimitError as exc:
             raise HTTPException(503, detail={"code": exc.code, "message": str(exc)}) from exc
         except WorkspaceError as exc:
