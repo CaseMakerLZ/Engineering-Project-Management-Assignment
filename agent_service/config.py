@@ -40,6 +40,20 @@ class Settings:
     workspace_page_size: int = 100
     workspace_max_page_size: int = 200
     workspace_max_scan_entries: int = 5000
+    # 文本预览上限（组长说明 §4.2 的起步值 1 MiB）；超限返回 413，不截断内容。
+    workspace_max_preview_bytes: int = 1_048_576
+    # 单文件下载上限与并发名额（组长说明 §4.3 的起步值 20 MiB）。
+    # 名额满时立刻 429 受控拒绝，不进入无界排队。
+    workspace_max_download_bytes: int = 20_971_520
+    workspace_max_concurrent_downloads: int = 8
+    # 项目 ZIP 的起步限制（组长说明 §4.4）：文件数、输入总量、ZIP 上限、准备超时、
+    # 同时打包数量，以及临时目录（必须与项目目录分开，避免递归打包）。
+    workspace_max_archive_files: int = 5000
+    workspace_max_archive_input_bytes: int = 104_857_600
+    workspace_max_archive_bytes: int = 104_857_600
+    workspace_archive_timeout_seconds: float = 60.0
+    workspace_max_concurrent_archives: int = 1
+    workspace_archive_temp_dir: str = ""
 
     @classmethod
     def from_environment(cls, config_path: str | Path | None = None) -> "Settings":
@@ -115,6 +129,42 @@ class Settings:
             workspace_max_scan_entries=_int_setting(
                 "AGENT_SERVICE_WORKSPACE_MAX_SCAN_ENTRIES",
                 workspace.get("max_scan_entries"), environment_fallback, 5000,
+            ),
+            workspace_max_preview_bytes=_int_setting(
+                "AGENT_SERVICE_WORKSPACE_MAX_PREVIEW_BYTES",
+                workspace.get("max_preview_bytes"), environment_fallback, 1_048_576,
+            ),
+            workspace_max_download_bytes=_int_setting(
+                "AGENT_SERVICE_WORKSPACE_MAX_DOWNLOAD_BYTES",
+                workspace.get("max_download_bytes"), environment_fallback, 20_971_520,
+            ),
+            workspace_max_concurrent_downloads=_int_setting(
+                "AGENT_SERVICE_WORKSPACE_MAX_CONCURRENT_DOWNLOADS",
+                workspace.get("max_concurrent_downloads"), environment_fallback, 8,
+            ),
+            workspace_max_archive_files=_int_setting(
+                "AGENT_SERVICE_WORKSPACE_MAX_ARCHIVE_FILES",
+                workspace.get("max_archive_files"), environment_fallback, 5000,
+            ),
+            workspace_max_archive_input_bytes=_int_setting(
+                "AGENT_SERVICE_WORKSPACE_MAX_ARCHIVE_INPUT_BYTES",
+                workspace.get("max_archive_input_bytes"), environment_fallback, 104_857_600,
+            ),
+            workspace_max_archive_bytes=_int_setting(
+                "AGENT_SERVICE_WORKSPACE_MAX_ARCHIVE_BYTES",
+                workspace.get("max_archive_bytes"), environment_fallback, 104_857_600,
+            ),
+            workspace_archive_timeout_seconds=_float_setting(
+                "AGENT_SERVICE_WORKSPACE_ARCHIVE_TIMEOUT_SECONDS",
+                workspace.get("archive_timeout_seconds"), environment_fallback, 60.0,
+            ),
+            workspace_max_concurrent_archives=_int_setting(
+                "AGENT_SERVICE_WORKSPACE_MAX_CONCURRENT_ARCHIVES",
+                workspace.get("max_concurrent_archives"), environment_fallback, 1,
+            ),
+            workspace_archive_temp_dir=_string_setting(
+                "AGENT_SERVICE_WORKSPACE_ARCHIVE_TEMP_DIR",
+                workspace.get("archive_temp_dir"), environment_fallback, "",
             ),
         )
 

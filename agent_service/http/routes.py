@@ -1,6 +1,6 @@
 """Java 请求的具体处理入口；创建服务和装配依赖放在 agent_service/app.py。"""
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -24,6 +24,7 @@ _HTTP_STATUS_BY_WORKSPACE_CODE = {
     WorkspaceErrorCode.PATH_FORBIDDEN.value: status.HTTP_404_NOT_FOUND,
     WorkspaceErrorCode.PROJECT_BUSY.value: status.HTTP_409_CONFLICT,
     WorkspaceErrorCode.CURSOR_EXPIRED.value: status.HTTP_409_CONFLICT,
+    WorkspaceErrorCode.DOWNLOAD_LIMIT.value: status.HTTP_429_TOO_MANY_REQUESTS,
     WorkspaceErrorCode.PREVIEW_TOO_LARGE.value: 413,
     WorkspaceErrorCode.DOWNLOAD_TOO_LARGE.value: 413,
     WorkspaceErrorCode.ARCHIVE_TOO_LARGE.value: 413,
@@ -112,6 +113,83 @@ def create_router(
         except WorkspaceError as exc:
             raise _workspace_http_error(exc) from exc
         return page.to_dict()
+
+    # 文本预览：返回完整 UTF-8 文本（Java 说明 §6.2、组长说明 §4.2）。
+    # 不用 ETag：内容随时可能被任务改动，用 ETag 会制造"看起来最新"的错觉。
+    @router.get("/projects/{project_id}/files/content", dependencies=[Depends(verify_token)])
+    async def read_project_file(
+        project_id: str, response: Response, path: str = ""
+    ) -> dict:
+        """读取一个文本文件的完整内容，返回 Java 说明 §6.2 的 data 本体。
+
+        超上限 413、非文本或非 UTF-8 为 415、不可导出或不存在为 404；
+        响应带 ``Cache-Control: no-store``，不返回 ETag。
+        """
+
+        try:
+            # 打开句柄与读取都是阻塞 IO，放进线程池。
+            preview = await run_in_threadpool(
+                workspace_service.read_text_preview, project_id, path
+            )
+        except WorkspaceError as exc:
+            raise _workspace_http_error(exc) from exc
+        response.headers["Cache-Control"] = "no-store"
+        return preview.to_dict()
+
+    # 单文件下载：返回字节流而不是 Result（Java 说明 §6.3、组长说明 §4.3）。
+    @router.get("/projects/{project_id}/files/download", dependencies=[Depends(verify_token)])
+    async def download_project_file(project_id: str, path: str = "") -> StreamingResponse:
+        """下载一个允许导出的文件，成功时直接返回文件字节。
+
+        超上限 413、下载名额满 429、不可导出或不存在 404。内容分块发送，
+        客户端断开时由句柄自身关闭并归还下载名额，不在内存里攒整个文件。
+        """
+
+        try:
+            handle = await run_in_threadpool(
+                workspace_service.open_file_download, project_id, path
+            )
+        except WorkspaceError as exc:
+            raise _workspace_http_error(exc) from exc
+
+        headers = {
+            "Content-Disposition": handle.content_disposition,
+            "Content-Length": str(handle.size_bytes),
+            # 不把 HTML/SVG 当本站页面执行；类型固定为二进制流。
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-store",
+        }
+        return StreamingResponse(
+            handle.iter_chunks(),
+            media_type="application/octet-stream",
+            headers=headers,
+        )
+
+    # 项目压缩下载：先把 ZIP 完整生成好再返回字节流（Java 说明 §6.4、组长说明 §4.4）。
+    @router.get("/projects/{project_id}/archive", dependencies=[Depends(verify_token)])
+    async def download_project_archive(project_id: str) -> StreamingResponse:
+        """把整个项目打包成 ZIP 返回，成功时直接返回字节流。
+
+        项目正在运行/打包/Git 收尾时 409；文件数、输入量、ZIP 大小或准备时长超限
+        时 413/503；同时打包数量达上限时 429。发送阶段只读已完成的临时文件。
+        """
+
+        try:
+            handle = await run_in_threadpool(
+                workspace_service.prepare_archive, project_id
+            )
+        except WorkspaceError as exc:
+            raise _workspace_http_error(exc) from exc
+
+        headers = {
+            "Content-Disposition": handle.content_disposition,
+            "Content-Length": str(handle.size_bytes),
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-store",
+        }
+        return StreamingResponse(
+            handle.iter_chunks(), media_type="application/zip", headers=headers
+        )
 
     @router.post(
         "/runs",
