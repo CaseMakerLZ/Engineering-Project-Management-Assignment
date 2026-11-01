@@ -3,6 +3,7 @@ package com.Agent.javabackend.Service.impl;
 import com.Agent.javabackend.Mapper.AuthSessionMapper;
 import com.Agent.javabackend.Mapper.UserMapper;
 import com.Agent.javabackend.Service.AuthService;
+import com.Agent.javabackend.Service.TurnEventService;
 import com.Agent.javabackend.auth.AuthPrincipal;
 import com.Agent.javabackend.dto.AuthDTO.AuthCredentialsRequest;
 import com.Agent.javabackend.dto.AuthDTO.LoginResponse;
@@ -38,16 +39,19 @@ public class AuthServiceImpl implements AuthService {
     private final UserMapper users;
     private final AuthSessionMapper sessions;
     private final PasswordEncoder passwordEncoder;
+    private final TurnEventService turnEventService;
     private final SecureRandom secureRandom;
     private final String dummyPasswordHash;
 
     public AuthServiceImpl(
             UserMapper users,
             AuthSessionMapper sessions,
-            PasswordEncoder passwordEncoder) {
+            PasswordEncoder passwordEncoder,
+            TurnEventService turnEventService) {
         this.users = users;
         this.sessions = sessions;
         this.passwordEncoder = passwordEncoder;
+        this.turnEventService = turnEventService;
         this.secureRandom = new SecureRandom();
         this.dummyPasswordHash = passwordEncoder.encode("dummy-password-value");
     }
@@ -121,7 +125,7 @@ public class AuthServiceImpl implements AuthService {
         User user = users.findById(session.getUserId())
                 .filter(candidate -> "ACTIVE".equals(candidate.getStatus()))
                 .orElseThrow(() -> new BaseException(ErrorCode.AUTH_TOKEN_INVALID));
-        return new AuthPrincipal(user, session.getSessionId());
+        return new AuthPrincipal(user, session.getSessionId(), session.getExpiresAt());
     }
 
     @Override
@@ -133,6 +137,8 @@ public class AuthServiceImpl implements AuthService {
     @Transactional
     public void logout(AuthPrincipal principal) {
         sessions.revokeById(principal.sessionId(), OffsetDateTime.now(ZoneOffset.UTC));
+        // 令牌撤销成功后关闭该会话已经打开的 SSE；Agent 任务本身继续运行。
+        turnEventService.closeSession(principal.sessionId());
     }
 
     private String generateToken() {
