@@ -77,9 +77,8 @@ public class ProjectServiceImpl implements ProjectService {
     public ProjectResponse get(String projectId, String ownerId) {
         Project project = requireOwnedProject(projectId, ownerId);
         // 云端进入已有项目时补建缺失目录；local 直接使用 SQLite 中的真实目录。
-        if (isCloud()) {
-            prepareWorkspaceAfterCommit(project.getId(), "项目目录准备失败");
-        }
+        // 上方是原实现说明；现在详情查询只读信息，避免 Agent 占用项目时被目录准备请求挡住。
+        // 缺失工作区仍在项目创建后、提交任务前准备，不在查看任务进度时执行。
         return toResponse(project);
     }
 

@@ -8,6 +8,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.web.servlet.HandlerInterceptor;
 
 import java.nio.charset.StandardCharsets;
+import java.net.URI;
 import java.security.MessageDigest;
 import java.util.HashSet;
 import java.util.Locale;
@@ -53,7 +54,10 @@ public class LocalAccessGuard implements HandlerInterceptor {
         if (hasOrigin && !allowedOrigins.contains(normalizeOrigin(origin))) {
             throw new BaseException(ErrorCode.LOCAL_ACCESS_DENIED);
         }
-        if (!hasOrigin && !validToken(request.getHeader(TOKEN_HEADER))) {
+        // 浏览器同源 GET 通常不发送 Origin；仅接受可信 Referer 与 same-origin 标记同时存在的只读请求。
+        // 补充原规则：无浏览器来源证据的请求仍必须持有本机凭据；配置凭据后仍由下方强制校验。
+        if (!hasOrigin && !trustedSameOriginRead(request)
+                && !validToken(request.getHeader(TOKEN_HEADER))) {
             // 没有 Origin 的请求不能无条件信任；必须证明自己持有本机凭据。
             throw new BaseException(ErrorCode.LOCAL_ACCESS_DENIED);
         }
@@ -64,6 +68,30 @@ public class LocalAccessGuard implements HandlerInterceptor {
             throw new BaseException(ErrorCode.LOCAL_ACCESS_DENIED);
         }
         return true;
+    }
+
+    private boolean trustedSameOriginRead(HttpServletRequest request) {
+        String method = request.getMethod();
+        if (!("GET".equalsIgnoreCase(method) || "HEAD".equalsIgnoreCase(method))
+                || !"same-origin".equalsIgnoreCase(request.getHeader("Sec-Fetch-Site"))) {
+            return false;
+        }
+        String referer = request.getHeader("Referer");
+        if (referer == null || referer.isBlank()) {
+            return false;
+        }
+        try {
+            URI uri = URI.create(referer);
+            String scheme = uri.getScheme();
+            if (!("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme))
+                    || uri.getHost() == null || uri.getRawUserInfo() != null) {
+                return false;
+            }
+            String origin = scheme + "://" + uri.getRawAuthority();
+            return allowedOrigins.contains(normalizeOrigin(origin));
+        } catch (IllegalArgumentException exception) {
+            return false;
+        }
     }
 
     private boolean validToken(String provided) {
