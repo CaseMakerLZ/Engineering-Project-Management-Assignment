@@ -47,4 +47,25 @@ public class Config {
 
         return builder.build();
     }
+
+    /**
+     * SSE 和文件下载各自使用空闲超时与有界连接数。
+     * 这些值不直接套用普通短请求的 read-timeout-ms。
+     */
+    @Bean
+    public AgentStreamingConfig agentStreamingConfig(
+            @Value("${agent-service.base-url}") String baseUrl,
+            @Value("${agent-service.internal-token:}") String token,
+            @Value("${agent-service.sse.connect-timeout-ms:3000}") long sseConnectTimeoutMs,
+            @Value("${agent-service.sse.idle-timeout-ms:60000}") long sseIdleTimeoutMs,
+            @Value("${agent-service.sse.connection-timeout-ms:1800000}") long sseConnectionTimeoutMs,
+            @Value("${agent-service.sse.max-connections:32}") int sseMaxConnections,
+            @Value("${agent-service.sse.max-frame-bytes:1048576}") int sseMaxFrameBytes,
+            @Value("${agent-service.file-stream.connect-timeout-ms:3000}") long fileConnectTimeoutMs,
+            @Value("${agent-service.file-stream.read-timeout-ms:60000}") long fileReadTimeoutMs) {
+        return new AgentStreamingConfig(
+                baseUrl, token, sseConnectTimeoutMs, sseIdleTimeoutMs,
+                sseConnectionTimeoutMs, sseMaxConnections, sseMaxFrameBytes,
+                fileConnectTimeoutMs, fileReadTimeoutMs);
+    }
 }
