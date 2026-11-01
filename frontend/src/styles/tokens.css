@@ -11,11 +11,11 @@
   --surface-raised: #ffffff;
   --line: #e5dfd3;
   --line-strong: #d5ccbc;
-  --accent: #5c4df4;
-  --accent-deep: #4435dd;
-  --accent-soft: #ece9ff;
-  --accent-wash: #f5f3ff;
-  --lime: #b8ff6a;
+  --accent: #506879;
+  --accent-deep: #344d5d;
+  --accent-soft: #edf2f4;
+  --accent-wash: #f5f8f9;
+  --lime: #c9ddd3;
   --mint: #0b9a7d;
   --mint-soft: #e8f8f2;
   --danger: #cf4555;
@@ -42,4 +42,5 @@
   --font-mono: "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   --sidebar-width: 264px;
   --pane-width: 278px;
+  --files-panel-width: clamp(330px, 27vw, 390px);
 }

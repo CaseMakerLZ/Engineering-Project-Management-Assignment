@@ -71,7 +71,7 @@
   color: var(--accent-deep);
   font-weight: 550;
   text-decoration: underline;
-  text-decoration-color: rgba(92, 77, 244, 0.26);
+  text-decoration-color: rgba(80, 104, 121, 0.26);
   text-decoration-thickness: 1px;
   text-underline-offset: 3px;
 }
@@ -126,7 +126,7 @@
 .markdown-body blockquote {
   margin: 1em 0;
   padding: 9px 15px;
-  border-left: 3px solid rgba(92, 77, 244, 0.38);
+  border-left: 3px solid rgba(80, 104, 121, 0.38);
   border-radius: 0 8px 8px 0;
   background: rgba(236, 233, 255, 0.42);
   color: #56525f;
@@ -149,10 +149,10 @@
 
 .markdown-body :not(pre) > code {
   padding: 0.16em 0.42em;
-  border: 1px solid rgba(92, 77, 244, 0.08);
+  border: 1px solid rgba(80, 104, 121, 0.08);
   border-radius: 5px;
   background: #f1eee8;
-  color: #4c3cc4;
+  color: #405a69;
   font-family: var(--font-mono);
   font-size: 0.9em;
 }

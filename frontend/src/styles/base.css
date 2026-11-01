@@ -60,7 +60,7 @@ img {
 }
 
 ::selection {
-  background: rgba(92, 77, 244, 0.2);
+  background: rgba(80, 104, 121, 0.2);
 }
 
 * {
@@ -85,7 +85,7 @@ img {
 }
 
 :focus-visible {
-  outline: 3px solid rgba(92, 77, 244, 0.26);
+  outline: 3px solid rgba(80, 104, 121, 0.26);
   outline-offset: 2px;
 }
 
@@ -187,7 +187,7 @@ img {
 
 .btn-primary {
   border-color: var(--accent);
-  background: linear-gradient(135deg, #695bfa, var(--accent-deep));
+  background: linear-gradient(135deg, #5d7684, var(--accent-deep));
   box-shadow:
     0 10px 24px rgba(84, 68, 232, 0.22),
     inset 0 1px 0 rgba(255, 255, 255, 0.2);
@@ -295,8 +295,8 @@ img {
 
 .field input:focus,
 .field textarea:focus {
-  border-color: rgba(92, 77, 244, 0.62);
-  box-shadow: 0 0 0 4px rgba(92, 77, 244, 0.09);
+  border-color: rgba(80, 104, 121, 0.62);
+  box-shadow: 0 0 0 4px rgba(80, 104, 121, 0.09);
 }
 
 .field input[aria-invalid="true"],
@@ -516,7 +516,7 @@ img {
   justify-content: center;
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 12px;
-  background: linear-gradient(145deg, #7a6cff, #4636df 65%, #3224b7);
+  background: linear-gradient(145deg, #607887, #344d5c 65%, #293e49);
   box-shadow:
     0 9px 22px rgba(57, 43, 196, 0.32),
     inset 0 1px 0 rgba(255, 255, 255, 0.22);
@@ -594,12 +594,12 @@ img {
   align-items: center;
   justify-content: center;
   margin-bottom: 20px;
-  border: 1px solid rgba(92, 77, 244, 0.14);
+  border: 1px solid rgba(80, 104, 121, 0.14);
   border-radius: 19px;
   background:
     linear-gradient(145deg, rgba(255, 255, 255, 0.74), rgba(236, 233, 255, 0.9)),
     var(--accent-soft);
-  box-shadow: 0 14px 32px rgba(92, 77, 244, 0.1);
+  box-shadow: 0 14px 32px rgba(80, 104, 121, 0.1);
   color: var(--accent);
 }
 
@@ -740,7 +740,7 @@ img {
   justify-content: center;
   gap: 28px;
   background:
-    radial-gradient(circle at 50% 38%, rgba(92, 77, 244, 0.08), transparent 35%),
+    radial-gradient(circle at 50% 38%, rgba(80, 104, 121, 0.08), transparent 35%),
     var(--paper);
 }
 
@@ -771,7 +771,7 @@ img {
   height: 3px;
   overflow: hidden;
   border-radius: 999px;
-  background: rgba(92, 77, 244, 0.12);
+  background: rgba(80, 104, 121, 0.12);
 }
 
 .session-loader::after {

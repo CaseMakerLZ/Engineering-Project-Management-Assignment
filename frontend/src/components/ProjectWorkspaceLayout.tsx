@@ -4,12 +4,14 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react'
 import {
   ArrowLeft,
   ChevronRight,
   FolderSearch,
+  FolderTree,
   Menu,
   MessagesSquare,
   Plus,
@@ -20,12 +22,14 @@ import {
 import { Link, Outlet, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { listConversations } from '../api/conversations'
 import { getProject } from '../api/projects'
+import { IS_CLOUD_MODE } from '../config'
 import { describeError, isResourceNotFound } from '../lib/errors'
 import { formatRelativeTime } from '../lib/format'
 import type { Conversation, Project } from '../types/api'
 import { useAppShell } from './AppShell'
 import { CreateConversationDialog } from './CreateConversationDialog'
 import { ProjectGlyph } from './ProjectGlyph'
+import { ProjectFilesPanel } from './ProjectFilesPanel'
 import { useToast } from './ToastProvider'
 
 interface ProjectWorkspaceContextValue {
@@ -35,6 +39,11 @@ interface ProjectWorkspaceContextValue {
   conversationsError: string | null
   refreshConversations: () => void
   openNewConversation: () => void
+  filesPanelOpen: boolean
+  toggleFilesPanel: () => void
+  taskMutating: boolean
+  notifyTaskStarted: (taskId: string) => void
+  notifyTaskSettled: (taskId: string) => void
 }
 
 const ProjectWorkspaceContext = createContext<ProjectWorkspaceContextValue | null>(null)
@@ -56,12 +65,25 @@ export function ProjectWorkspaceLayout() {
   const [conversationsLoading, setConversationsLoading] = useState(true)
   const [conversationsError, setConversationsError] = useState<string | null>(null)
   const [paneOpen, setPaneOpen] = useState(false)
+  const [filesPanelOpen, setFilesPanelOpen] = useState(() =>
+    typeof window === 'undefined'
+      ? true
+      : !window.matchMedia('(max-width: 1280px)').matches,
+  )
+  const [filesRefreshVersion, setFilesRefreshVersion] = useState(0)
+  const [taskMutating, setTaskMutating] = useState(false)
+  const activeTaskIdsRef = useRef(new Set<string>())
   const [createConversationOpen, setCreateConversationOpen] = useState(false)
   const [query, setQuery] = useState('')
   const navigate = useNavigate()
   const location = useLocation()
   const { openSidebar } = useAppShell()
   const { pushToast } = useToast()
+
+  useEffect(() => {
+    activeTaskIdsRef.current.clear()
+    setTaskMutating(false)
+  }, [projectId])
 
   useEffect(() => {
     let cancelled = false
@@ -151,6 +173,21 @@ export function ProjectWorkspaceLayout() {
     navigate(`/projects/${projectId}/conversations/${conversation.conversation_id}`)
   }
 
+  const notifyTaskStarted = useCallback((taskId: string) => {
+    activeTaskIdsRef.current.add(taskId)
+    setTaskMutating(true)
+  }, [])
+
+  const notifyTaskSettled = useCallback((taskId: string) => {
+    activeTaskIdsRef.current.delete(taskId)
+    setTaskMutating(activeTaskIdsRef.current.size > 0)
+    setFilesRefreshVersion((current) => current + 1)
+  }, [])
+
+  const toggleFilesPanel = useCallback(() => {
+    setFilesPanelOpen((current) => !current)
+  }, [])
+
   const filteredConversations = useMemo(() => {
     const normalized = query.trim().toLowerCase()
     if (!normalized) return conversations
@@ -178,8 +215,24 @@ export function ProjectWorkspaceLayout() {
       conversationsError,
       refreshConversations: () => void refreshConversations(),
       openNewConversation: () => setCreateConversationOpen(true),
+      filesPanelOpen,
+      toggleFilesPanel,
+      taskMutating,
+      notifyTaskStarted,
+      notifyTaskSettled,
     }
-  }, [conversations, conversationsError, conversationsLoading, project, refreshConversations])
+  }, [
+    conversations,
+    conversationsError,
+    conversationsLoading,
+    filesPanelOpen,
+    notifyTaskSettled,
+    notifyTaskStarted,
+    project,
+    refreshConversations,
+    taskMutating,
+    toggleFilesPanel,
+  ])
 
   if (loading) {
     return (
@@ -223,7 +276,11 @@ export function ProjectWorkspaceLayout() {
 
   return (
     <ProjectWorkspaceContext.Provider value={contextValue}>
-      <div className={`workspace ${paneOpen ? 'pane-open' : ''}`}>
+      <div
+        className={`workspace ${paneOpen ? 'pane-open' : ''} ${
+          IS_CLOUD_MODE && filesPanelOpen ? 'files-panel-open' : ''
+        }`}
+      >
         <button
           type="button"
           className="pane-scrim"
@@ -369,9 +426,45 @@ export function ProjectWorkspaceLayout() {
             >
               <MessagesSquare size={19} />
             </button>
+            {IS_CLOUD_MODE ? (
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={toggleFilesPanel}
+                aria-label={filesPanelOpen ? '收起项目文件' : '打开项目文件'}
+              >
+                <FolderTree size={18} />
+              </button>
+            ) : null}
           </div>
           <Outlet context={contextValue} />
+          {IS_CLOUD_MODE && !filesPanelOpen && !activeConversationId ? (
+            <button
+              type="button"
+              className="files-panel-reopen"
+              onClick={toggleFilesPanel}
+            >
+              <FolderTree size={15} />
+              项目文件
+            </button>
+          ) : null}
         </section>
+        {IS_CLOUD_MODE && filesPanelOpen ? (
+          <>
+            <button
+              type="button"
+              className="files-panel-scrim"
+              onClick={() => setFilesPanelOpen(false)}
+              aria-label="关闭项目文件"
+            />
+            <ProjectFilesPanel
+              projectId={project.project_id}
+              refreshVersion={filesRefreshVersion}
+              taskMutating={taskMutating}
+              onClose={() => setFilesPanelOpen(false)}
+            />
+          </>
+        ) : null}
       </div>
 
       <CreateConversationDialog
