@@ -45,14 +45,9 @@ CREATE TABLE IF NOT EXISTS conversation (
 CREATE TABLE IF NOT EXISTS agent_task (
     id VARCHAR(36) PRIMARY KEY,
     conversation_id VARCHAR(36) NOT NULL,
-    prompt TEXT NOT NULL,
     python_run_id VARCHAR(36) NOT NULL,
-    status VARCHAR(32) NOT NULL,
-    result MEDIUMTEXT,
-    error TEXT,
     created_at DATETIME(6) NOT NULL,
-    started_at DATETIME(6),
-    finished_at DATETIME(6),
+    UNIQUE KEY uk_agent_task_run (python_run_id),
     INDEX idx_task_conversation (conversation_id, created_at),
     CONSTRAINT fk_task_conversation FOREIGN KEY (conversation_id) REFERENCES conversation(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

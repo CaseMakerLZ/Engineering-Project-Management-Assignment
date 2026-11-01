@@ -11,7 +11,7 @@ import java.util.Optional;
 @Mapper
 public interface AgentTaskMapper {
     int insert(AgentTask task);
-    int updateExecution(AgentTask task);
     Optional<AgentTask> findById(@Param("taskId") String taskId);
     List<AgentTask> findByConversationId(@Param("conversationId") String conversationId);
+    int countActiveByConversationId(@Param("conversationId") String conversationId);
 }
