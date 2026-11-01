@@ -66,7 +66,10 @@ class RunService:
             created_at=_now(),
         )
         if not self._run_slots.acquire(blocking=False):
+            #_run_slots是信号量对象，acquire表示信号量减1（wait操作），blocking=False表示信号量减为0时不阻塞直接返回False
+            #含义是信号量减为0时（即到达设置能进入缓冲区上限时）直接抛出以下异常
             raise RunCapacityError("Agent 当前正在处理较多任务，请稍后重试")
+        #若通过了上面的判断，则
         with self._run_slot_lock:
             self._run_slot_holders.add(run.run_id)
         slot_acquired = True

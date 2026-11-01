@@ -27,6 +27,11 @@ class Settings:
     mysql_user: str = "root"
     mysql_password: str = "123456"
     mysql_database: str = "agent_javabackend"
+    # 只限制 Python 的 MySQL 连接数，不与 Java 共用；实际使用时才建立连接。
+    mysql_pool_size: int = 5
+    mysql_connect_timeout_seconds: int = 5
+    mysql_read_timeout_seconds: int = 10
+    mysql_write_timeout_seconds: int = 10
     # auto 会根据运行模式选择本地 SQLite 或云端 MySQL，也可显式指定后端。
     storage_backend: str = "auto"
     sqlite_database_path: str = "data/agent.sqlite3"
@@ -113,6 +118,21 @@ class Settings:
             mysql_password=_string_setting("AGENT_SERVICE_MYSQL_PASSWORD", mysql.get("password"), environment_fallback, "123456"),
             mysql_database=_string_setting(
                 "AGENT_SERVICE_MYSQL_DATABASE", mysql.get("database"), environment_fallback, "agent_javabackend"
+            ),
+            mysql_pool_size=_int_setting(
+                "AGENT_SERVICE_MYSQL_POOL_SIZE", mysql.get("pool_size"), environment_fallback, 5
+            ),
+            mysql_connect_timeout_seconds=_int_setting(
+                "AGENT_SERVICE_MYSQL_CONNECT_TIMEOUT_SECONDS", mysql.get("connect_timeout_seconds"),
+                environment_fallback, 5,
+            ),
+            mysql_read_timeout_seconds=_int_setting(
+                "AGENT_SERVICE_MYSQL_READ_TIMEOUT_SECONDS", mysql.get("read_timeout_seconds"),
+                environment_fallback, 10,
+            ),
+            mysql_write_timeout_seconds=_int_setting(
+                "AGENT_SERVICE_MYSQL_WRITE_TIMEOUT_SECONDS", mysql.get("write_timeout_seconds"),
+                environment_fallback, 10,
             ),
             storage_backend=_string_setting(
                 "AGENT_SERVICE_STORAGE_BACKEND", storage.get("backend"), environment_fallback, "auto"

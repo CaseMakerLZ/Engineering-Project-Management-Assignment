@@ -152,10 +152,18 @@ def _resolve_local_project_from_database(settings: Settings, project_id: str | N
 class CurrentAgentRuntime:
     """使用当前手写 Agent Core 执行任务。"""
 
-    def __init__(self, settings: Settings, repository: Any | None = None) -> None:
+    def __init__(
+        self, settings: Settings,
+        repository: Any | None = None,
+        llm_client: Any | None = None,
+    ) -> None:
+        """保存配置、仓储与共享模型客户端；构造时不连库、不建网络连接。"""
+
         self.settings = settings
         # 与 RunService 共用同一个仓储，保证历史读取和快照更新使用同一数据源。
         self.repository = repository
+        # 应用级共享模型客户端；为 None 时退回每个任务创建一次（测试与单脚本）。
+        self.llm_client = llm_client
 
     # 以后替换 Agent 实现时，只需要增加新的 Runtime，不用修改任务服务。
     async def run(
@@ -174,7 +182,10 @@ class CurrentAgentRuntime:
         #组装Agent
         # SSE 第一步仅预留可见文字回调；后续接模型流时才调用，不能拆分最终结果假装流式。
         # 第二步已经接通：下方把 on_text 交给 Agent，再经 AgentLoop 传到模型客户端。
-        llm = LLMClient(
+        # 复用应用级共享客户端（组长说明 §6.2）；没有注入时才每任务创建一次，
+        # 这样测试与单脚本的行为保持不变。
+        # 复用客户端最关键的一行“ 'or'左边非空就绝不构造右边；这是全部复用的关键”
+        llm = self.llm_client or LLMClient(
             api_key=self.settings.llm_api_key,
             base_url=self.settings.llm_base_url,
             model=self.settings.llm_model_id,
