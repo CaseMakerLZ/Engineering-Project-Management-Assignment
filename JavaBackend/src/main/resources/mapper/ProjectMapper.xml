@@ -21,4 +21,17 @@
         SELECT id, name, description, owner_id, created_at, updated_at
         FROM project WHERE id = #{projectId}
     </select>
+
+    <select id="findByIdAndOwnerId" resultMap="ProjectMap">
+        SELECT id, name, description, owner_id, created_at, updated_at
+        FROM project
+        WHERE id = #{projectId} AND owner_id = #{ownerId}
+    </select>
+
+    <select id="findAllByOwnerId" resultMap="ProjectMap">
+        SELECT id, name, description, owner_id, created_at, updated_at
+        FROM project
+        WHERE owner_id = #{ownerId}
+        ORDER BY created_at, id
+    </select>
 </mapper>

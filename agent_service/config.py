@@ -27,6 +27,11 @@ class Settings:
     mysql_user: str = "root"
     mysql_password: str = "123456"
     mysql_database: str = "agent_javabackend"
+    # 只限制 Python 的 MySQL 连接数，不与 Java 共用；实际使用时才建立连接。
+    mysql_pool_size: int = 5
+    mysql_connect_timeout_seconds: int = 5
+    mysql_read_timeout_seconds: int = 10
+    mysql_write_timeout_seconds: int = 10
     # auto 会根据运行模式选择本地 SQLite 或云端 MySQL，也可显式指定后端。
     storage_backend: str = "auto"
     sqlite_database_path: str = "data/agent.sqlite3"
@@ -35,6 +40,31 @@ class Settings:
     # 云端使用受控父目录，项目目录由 project_id 选择。
     workspace_root: str = "."
     execution_mode: str = "local"
+    # 单个 Python 进程允许同时运行的 Agent 数量；满载时直接拒绝新任务，不建立无限等待队列。
+    max_concurrent_runs: int = 4
+    # 目录浏览的服务端限制（组长说明 §4.1 的起步值）。
+    # 每页默认 100、最大 200；单目录扫描上限 5000 项，达到即报错而不是截断。
+    workspace_page_size: int = 100
+    workspace_max_page_size: int = 200
+    workspace_max_scan_entries: int = 5000
+    # 文本预览上限（组长说明 §4.2 的起步值 1 MiB）；超限返回 413，不截断内容。
+    workspace_max_preview_bytes: int = 1_048_576
+    # 单文件下载上限与并发名额（组长说明 §4.3 的起步值 20 MiB）。
+    # 名额满时立刻 429 受控拒绝，不进入无界排队。
+    workspace_max_download_bytes: int = 20_971_520
+    workspace_max_concurrent_downloads: int = 8
+    # 项目 ZIP 的起步限制（组长说明 §4.4）：文件数、输入总量、ZIP 上限、准备超时、
+    # 同时打包数量，以及临时目录（必须与项目目录分开，避免递归打包）。
+    workspace_max_archive_files: int = 5000
+    workspace_max_archive_input_bytes: int = 104_857_600
+    workspace_max_archive_bytes: int = 104_857_600
+    workspace_archive_timeout_seconds: float = 60.0
+    workspace_max_concurrent_archives: int = 1
+    workspace_archive_temp_dir: str = ""
+    # Git 只用于云端项目版本，不开放任意命令或远程推送。
+    workspace_git_timeout_seconds: float = 30.0
+    workspace_git_max_output_bytes: int = 1_048_576
+    workspace_git_max_file_bytes: int = 20_971_520
 
     @classmethod
     def from_environment(cls, config_path: str | Path | None = None) -> "Settings":
@@ -57,6 +87,7 @@ class Settings:
         storage = _section(toml_values, "storage")
         runtime = _section(toml_values, "runtime")
         cloud = _section(toml_values, "cloud")
+        workspace = _section(toml_values, "workspace")
 
         execution_mode = _string_setting(
             "AGENT_SERVICE_EXECUTION_MODE", runtime.get("mode"), environment_fallback, "local"
@@ -88,6 +119,21 @@ class Settings:
             mysql_database=_string_setting(
                 "AGENT_SERVICE_MYSQL_DATABASE", mysql.get("database"), environment_fallback, "agent_javabackend"
             ),
+            mysql_pool_size=_int_setting(
+                "AGENT_SERVICE_MYSQL_POOL_SIZE", mysql.get("pool_size"), environment_fallback, 5
+            ),
+            mysql_connect_timeout_seconds=_int_setting(
+                "AGENT_SERVICE_MYSQL_CONNECT_TIMEOUT_SECONDS", mysql.get("connect_timeout_seconds"),
+                environment_fallback, 5,
+            ),
+            mysql_read_timeout_seconds=_int_setting(
+                "AGENT_SERVICE_MYSQL_READ_TIMEOUT_SECONDS", mysql.get("read_timeout_seconds"),
+                environment_fallback, 10,
+            ),
+            mysql_write_timeout_seconds=_int_setting(
+                "AGENT_SERVICE_MYSQL_WRITE_TIMEOUT_SECONDS", mysql.get("write_timeout_seconds"),
+                environment_fallback, 10,
+            ),
             storage_backend=_string_setting(
                 "AGENT_SERVICE_STORAGE_BACKEND", storage.get("backend"), environment_fallback, "auto"
             ).lower(),
@@ -100,10 +146,76 @@ class Settings:
             ),
             workspace_root=workspace_root,
             execution_mode=execution_mode,
+            max_concurrent_runs=_int_setting(
+                "AGENT_SERVICE_MAX_CONCURRENT_RUNS",
+                runtime.get("max_concurrent_runs"),
+                environment_fallback,
+                4,
+            ),
+            workspace_page_size=_int_setting(
+                "AGENT_SERVICE_WORKSPACE_PAGE_SIZE", workspace.get("page_size"), environment_fallback, 100
+            ),
+            workspace_max_page_size=_int_setting(
+                "AGENT_SERVICE_WORKSPACE_MAX_PAGE_SIZE", workspace.get("max_page_size"), environment_fallback, 200
+            ),
+            workspace_max_scan_entries=_int_setting(
+                "AGENT_SERVICE_WORKSPACE_MAX_SCAN_ENTRIES",
+                workspace.get("max_scan_entries"), environment_fallback, 5000,
+            ),
+            workspace_max_preview_bytes=_int_setting(
+                "AGENT_SERVICE_WORKSPACE_MAX_PREVIEW_BYTES",
+                workspace.get("max_preview_bytes"), environment_fallback, 1_048_576,
+            ),
+            workspace_max_download_bytes=_int_setting(
+                "AGENT_SERVICE_WORKSPACE_MAX_DOWNLOAD_BYTES",
+                workspace.get("max_download_bytes"), environment_fallback, 20_971_520,
+            ),
+            workspace_max_concurrent_downloads=_int_setting(
+                "AGENT_SERVICE_WORKSPACE_MAX_CONCURRENT_DOWNLOADS",
+                workspace.get("max_concurrent_downloads"), environment_fallback, 8,
+            ),
+            workspace_max_archive_files=_int_setting(
+                "AGENT_SERVICE_WORKSPACE_MAX_ARCHIVE_FILES",
+                workspace.get("max_archive_files"), environment_fallback, 5000,
+            ),
+            workspace_max_archive_input_bytes=_int_setting(
+                "AGENT_SERVICE_WORKSPACE_MAX_ARCHIVE_INPUT_BYTES",
+                workspace.get("max_archive_input_bytes"), environment_fallback, 104_857_600,
+            ),
+            workspace_max_archive_bytes=_int_setting(
+                "AGENT_SERVICE_WORKSPACE_MAX_ARCHIVE_BYTES",
+                workspace.get("max_archive_bytes"), environment_fallback, 104_857_600,
+            ),
+            workspace_archive_timeout_seconds=_float_setting(
+                "AGENT_SERVICE_WORKSPACE_ARCHIVE_TIMEOUT_SECONDS",
+                workspace.get("archive_timeout_seconds"), environment_fallback, 60.0,
+            ),
+            workspace_max_concurrent_archives=_int_setting(
+                "AGENT_SERVICE_WORKSPACE_MAX_CONCURRENT_ARCHIVES",
+                workspace.get("max_concurrent_archives"), environment_fallback, 1,
+            ),
+            workspace_archive_temp_dir=_string_setting(
+                "AGENT_SERVICE_WORKSPACE_ARCHIVE_TEMP_DIR",
+                workspace.get("archive_temp_dir"), environment_fallback, "",
+            ),
+            workspace_git_timeout_seconds=_float_setting(
+                "AGENT_SERVICE_GIT_TIMEOUT_SECONDS", workspace.get("git_timeout_seconds"),
+                environment_fallback, 30.0,
+            ),
+            workspace_git_max_output_bytes=_int_setting(
+                "AGENT_SERVICE_GIT_MAX_OUTPUT_BYTES", workspace.get("git_max_output_bytes"),
+                environment_fallback, 1_048_576,
+            ),
+            workspace_git_max_file_bytes=_int_setting(
+                "AGENT_SERVICE_GIT_MAX_FILE_BYTES", workspace.get("git_max_file_bytes"),
+                environment_fallback, 20_971_520,
+            ),
         )
 
 
 def _load_toml(config_path: Path) -> dict[str, Any]:
+    """读取 TOML 主配置；文件不存在返回空字典，不创建文件也不报错。"""
+
     if not config_path.is_file():
         return {}
     with config_path.open("rb") as file:
@@ -114,6 +226,8 @@ def _load_toml(config_path: Path) -> dict[str, Any]:
 
 
 def _section(values: dict[str, Any], name: str) -> dict[str, Any]:
+    """取出一个配置段；缺失或显式为空都当作空段，类型不对直接报错。"""
+
     section = values.get(name, {})
     if section is None:
         return {}
@@ -123,6 +237,8 @@ def _section(values: dict[str, Any], name: str) -> dict[str, Any]:
 
 
 def _resolve_path(value: str | None, base_dir: Path) -> str | None:
+    """把配置里的相对路径按配置文件所在目录解析成绝对路径。"""
+
     if value is None:
         return None
     path = Path(value).expanduser()
@@ -132,27 +248,37 @@ def _resolve_path(value: str | None, base_dir: Path) -> str | None:
 
 
 def _environment_value(name: str, legacy_env: dict[str, str]) -> str | None:
+    """取环境变量值；没有时回退到调用方传入的兼容映射。"""
+
     if name in os.environ:
         return os.environ[name]
     return legacy_env.get(name)
 
 
 def _string_setting(name: str, toml_value: Any, legacy_env: dict[str, str], default: str) -> str:
+    """读取字符串配置：TOML 优先，其次环境变量，最后默认值。"""
+
     value = toml_value if toml_value is not None else _environment_value(name, legacy_env)
     return default if value is None or value == "" else str(value)
 
 
 def _optional_string_setting(name: str, toml_value: Any, legacy_env: dict[str, str]) -> str | None:
+    """读取可为空的字符串配置；空串按未配置处理，返回 None。"""
+
     value = toml_value if toml_value is not None else _environment_value(name, legacy_env)
     return None if value is None or value == "" else str(value)
 
 
 def _int_setting(name: str, toml_value: Any, legacy_env: dict[str, str], default: int) -> int:
+    """读取整数配置；空值用默认值，非数字字符串会直接抛 ValueError。"""
+
     value = toml_value if toml_value is not None else _environment_value(name, legacy_env)
     return default if value is None or value == "" else int(value)
 
 
 def _float_setting(name: str, toml_value: Any, legacy_env: dict[str, str], default: float) -> float:
+    """读取浮点配置；空值用默认值，非数字字符串会直接抛 ValueError。"""
+
     value = toml_value if toml_value is not None else _environment_value(name, legacy_env)
     return default if value is None or value == "" else float(value)
 
@@ -160,6 +286,8 @@ def _float_setting(name: str, toml_value: Any, legacy_env: dict[str, str], defau
 def _path_setting(
     name: str, toml_value: Any, legacy_env: dict[str, str], default: str, config_dir: Path
 ) -> str:
+    """读取路径配置并解析成绝对路径；相对路径以配置文件所在目录为基准。"""
+
     value = toml_value if toml_value is not None else _environment_value(name, legacy_env)
     resolved = _resolve_path(str(value) if value not in (None, "") else default, config_dir)
     assert resolved is not None

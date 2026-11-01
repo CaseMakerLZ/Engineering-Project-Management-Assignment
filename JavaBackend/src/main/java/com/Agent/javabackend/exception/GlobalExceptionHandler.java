@@ -6,13 +6,32 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+
+import java.util.Map;
 
 @Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+    /**
+     * 工作区准备失败时项目记录已经存在，因此把 project_id 随错误一起返回，
+     * 前端可保留并跳转到该项目，而不是再次发送创建请求。
+     */
+    @ExceptionHandler(ProjectWorkspacePreparationException.class)
+    public ResponseEntity<Result<Map<String, String>>> handleProjectWorkspacePreparationException(
+            ProjectWorkspacePreparationException ex, HttpServletRequest request) {
+        log.warn("[工作区准备异常] 请求路径: {}, 项目ID: {}, 异常信息: {}",
+                request.getRequestURI(), ex.getProjectId(), ex.getMessage());
+        Result<Map<String, String>> body = Result.error(
+                ex.getErrorCode().getCode(), ex.getMessage());
+        body.setData(Map.of("project_id", ex.getProjectId()));
+        return ResponseEntity.status(ex.getErrorCode().getHttpStatus()).body(body);
+    }
+
     /**
      * 处理自定义的AgentService等方面的异常，后续的用户方面的业务、数据库方面的业务应该也可用
      */
@@ -59,6 +78,18 @@ public class GlobalExceptionHandler {
             HttpMessageNotReadableException ex,
             HttpServletRequest request) {
         log.warn("[请求体解析异常] 请求路径: {}, 异常信息: {}", request.getRequestURI(), ex.getMessage());
+        return ResponseEntity
+                .status(ErrorCode.INVALID_ARGUMENT.getHttpStatus())
+                .body(Result.error(ErrorCode.INVALID_ARGUMENT.getCode(), ErrorCode.INVALID_ARGUMENT.getMessage()));
+    }
+
+    // 缺少 query 参数或参数类型不合法时，不能落到兜底 500。
+    @ExceptionHandler({MissingServletRequestParameterException.class,
+            MethodArgumentTypeMismatchException.class})
+    public ResponseEntity<Result<Void>> handleBadRequestParameter(
+            Exception ex,
+            HttpServletRequest request) {
+        log.warn("[请求参数异常] 请求路径: {}, 异常信息: {}", request.getRequestURI(), ex.getMessage());
         return ResponseEntity
                 .status(ErrorCode.INVALID_ARGUMENT.getHttpStatus())
                 .body(Result.error(ErrorCode.INVALID_ARGUMENT.getCode(), ErrorCode.INVALID_ARGUMENT.getMessage()));

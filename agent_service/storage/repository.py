@@ -27,6 +27,7 @@ SQLiteRunRepository # 本地数据库适配器，同时满足上面两个接口
 
 import json
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock, RLock
@@ -35,6 +36,7 @@ from typing import Any, Protocol
 from ..config import Settings
 from ..runs.models import Run, RunMessage, RunStatus
 from .models import MemoryRecord
+from .mysql_pool import MySQLConnectionPool
 
 
 # 内部格式转换：数据库里的 JSON/时间 -> Python 对象，或反向转换。
@@ -85,6 +87,10 @@ class RunRepository(Protocol):
         """确保 Python 所需表结构存在；可重复调用，不清空已有数据。"""
         ...
 
+    def close(self) -> None:
+        """释放仓储拥有的数据库连接，由创建仓储的一方调用。"""
+        ...
+
     def create_run(self, run: Run) -> Run:
         """把新 Run 写入 agent_run，返回传入的 Run；不执行任务。"""
         ...
@@ -115,6 +121,12 @@ class RunRepository(Protocol):
         self, project_id: str, conversation_id: str, before_created_at: datetime, limit: int
     ) -> list[Run]:
         """供 ContextBuilder 取本轮之前同项目同对话的最近已完成运行，正序返回。"""
+        ...
+
+    # 项目归属：云端工作区按用户分层，真实目录必须由可信的 owner_id 决定，
+    # 不能因为"收到一个合法 UUID"就给它建目录。
+    def get_project_owner(self, project_id: str) -> str | None:
+        """读取云端项目的 owner_id；项目不存在或没有归属时返回 None。"""
         ...
 
 
@@ -211,13 +223,14 @@ class MySQLRunRepository:
         self.settings = settings
         self._initialize_lock = Lock()
         self._initialized = False
+        for timeout in (settings.mysql_connect_timeout_seconds,
+                        settings.mysql_read_timeout_seconds, settings.mysql_write_timeout_seconds):
+            if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 1:
+                raise ValueError("MySQL 连接和读写超时必须是正整数秒")
+        self._pool = MySQLConnectionPool(lambda: self._connect(), settings.mysql_pool_size)
 
     def _connect(self):
-        """内部方法：按 Settings 新建一个 MySQL 连接，由调用方法负责关闭。
-
-        放在这里统一处理连接参数；只在真正使用 MySQL 时导入驱动。
-        这与 SQLite 复用单个连接不同，不要把它当作连接池。
-        """
+        """仅供连接池按需新建物理连接；仓储操作必须从池中借还，不直接调用。"""
         try:
             import mysql.connector
         except ModuleNotFoundError as exc:
@@ -228,7 +241,14 @@ class MySQLRunRepository:
             host=self.settings.mysql_host, port=self.settings.mysql_port,
             user=self.settings.mysql_user, password=self.settings.mysql_password,
             database=self.settings.mysql_database,
+            connection_timeout=self.settings.mysql_connect_timeout_seconds,
+            read_timeout=self.settings.mysql_read_timeout_seconds,
+            write_timeout=self.settings.mysql_write_timeout_seconds,
         )
+
+    def close(self) -> None:
+        """关闭本仓储的 MySQL 连接池，不再接受新数据库操作。"""
+        self._pool.close()
 
     def initialize(self) -> None:
         """首次使用时创建三张 Python 数据表，成功后本实例不重复执行建表。
@@ -241,15 +261,12 @@ class MySQLRunRepository:
         with self._initialize_lock:
             if self._initialized:
                 return
-            connection = self._connect()
-            try:
-                cursor = connection.cursor()
-                for statement in self._schema:
-                    cursor.execute(statement)
-                connection.commit()
-                self._initialized = True
-            finally:
-                connection.close()
+            with self._pool.connection() as connection:
+                with closing(connection.cursor()) as cursor:
+                    for statement in self._schema:
+                        cursor.execute(statement)
+                    connection.commit()
+                    self._initialized = True
 
     def create_run(self, run: Run) -> Run:
         """由 RunService 创建 agent_run 记录，成功写库后返回同一个 Run。
@@ -258,25 +275,22 @@ class MySQLRunRepository:
         context 被编码为 JSON；正式链路创建时为空，运行前由 update_context 更新。
         """
         self.initialize()
-        connection = self._connect()
-        try:
-            cursor = connection.cursor()
-            cursor.execute(
-                """
-                INSERT INTO agent_run
-                (run_id, project_id, conversation_id, prompt, context_json, status,
-                 result, error, created_at, started_at, finished_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (run.run_id, run.project_id, run.conversation_id, run.prompt,
-                 json.dumps(run.context, ensure_ascii=False), run.status.value,
-                 run.result, run.error, _db_datetime(run.created_at),
-                 _db_datetime(run.started_at), _db_datetime(run.finished_at)),
-            )
-            connection.commit()
-            return run
-        finally:
-            connection.close()
+        with self._pool.connection() as connection:
+            with closing(connection.cursor()) as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO agent_run
+                    (run_id, project_id, conversation_id, prompt, context_json, status,
+                     result, error, created_at, started_at, finished_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (run.run_id, run.project_id, run.conversation_id, run.prompt,
+                     json.dumps(run.context, ensure_ascii=False), run.status.value,
+                     run.result, run.error, _db_datetime(run.created_at),
+                     _db_datetime(run.started_at), _db_datetime(run.finished_at)),
+                )
+                connection.commit()
+                return run
 
     def get_run(self, run_id: str) -> Run | None:
         """供任务查询/执行/取消按 run_id 读取 agent_run，不存在返回 None。
@@ -285,24 +299,41 @@ class MySQLRunRepository:
         此方法只按 ID 查询；调用入口的访问权限不由本方法判断。
         """
         self.initialize()
-        connection = self._connect()
-        try:
-            cursor = connection.cursor(dictionary=True)
-            cursor.execute("SELECT * FROM agent_run WHERE run_id = %s", (run_id,))
-            row = cursor.fetchone()
-            if row is None:
-                return None
-            return Run(
-                run_id=row["run_id"], project_id=row["project_id"],
-                conversation_id=row["conversation_id"], prompt=row["prompt"],
-                context=_decode_json(row["context_json"]),
-                status=RunStatus(row["status"]), result=row["result"],
-                error=row["error"], created_at=_utc_datetime(row["created_at"]),
-                started_at=_utc_datetime(row["started_at"]),
-                finished_at=_utc_datetime(row["finished_at"]),
-            )
-        finally:
-            connection.close()
+        with self._pool.connection() as connection:
+            with closing(connection.cursor(dictionary=True)) as cursor:
+                cursor.execute("SELECT * FROM agent_run WHERE run_id = %s", (run_id,))
+                row = cursor.fetchone()
+                if row is None:
+                    return None
+                return Run(
+                    run_id=row["run_id"], project_id=row["project_id"],
+                    conversation_id=row["conversation_id"], prompt=row["prompt"],
+                    context=_decode_json(row["context_json"]),
+                    status=RunStatus(row["status"]), result=row["result"],
+                    error=row["error"], created_at=_utc_datetime(row["created_at"]),
+                    started_at=_utc_datetime(row["started_at"]),
+                    finished_at=_utc_datetime(row["finished_at"]),
+                )
+
+    def get_project_owner(self, project_id: str) -> str | None:
+        """读取云端 project.owner_id，供工作区目录定位使用。
+
+        project 表由 Java 建表维护，Python 只读，不建表、不改数据。
+        项目不存在或 owner_id 为空串/NULL 都返回 None，由调用方明确拒绝；
+        这里不做"猜一个目录给他"的兜底。
+        """
+        if not project_id:
+            return None
+        with self._pool.connection() as connection:
+            with closing(connection.cursor()) as cursor:
+                cursor.execute("SELECT owner_id FROM project WHERE id = %s", (project_id,))
+                row = cursor.fetchone()
+        if row is None:
+            return None
+        owner_id = row[0]
+        if not isinstance(owner_id, str) or not owner_id.strip():
+            return None
+        return owner_id.strip()
 
     def list_recent_completed_runs(
         self, project_id: str, conversation_id: str, before_created_at: datetime, limit: int
@@ -317,37 +348,34 @@ class MySQLRunRepository:
         if limit <= 0:
             raise ValueError("历史轮次数量限制必须大于 0")
         self.initialize()
-        connection = self._connect()
-        try:
-            cursor = connection.cursor(dictionary=True)
-            cursor.execute(
-                """
-                SELECT run_id, project_id, conversation_id, prompt, context_json,
-                       status, result, error, created_at, started_at, finished_at
-                FROM agent_run
-                WHERE project_id = %s AND conversation_id = %s
-                  AND status = %s AND created_at < %s
-                ORDER BY created_at DESC, run_id DESC
-                LIMIT %s
-                """,
-                (project_id, conversation_id, RunStatus.COMPLETED.value,
-                 _db_datetime(before_created_at), limit),
-            )
-            rows = cursor.fetchall()
-            return [
-                Run(
-                    run_id=row["run_id"], project_id=row["project_id"],
-                    conversation_id=row["conversation_id"], prompt=row["prompt"],
-                    context=_decode_json(row["context_json"]),
-                    status=RunStatus(row["status"]), result=row["result"],
-                    error=row["error"], created_at=_utc_datetime(row["created_at"]),
-                    started_at=_utc_datetime(row["started_at"]),
-                    finished_at=_utc_datetime(row["finished_at"]),
+        with self._pool.connection() as connection:
+            with closing(connection.cursor(dictionary=True)) as cursor:
+                cursor.execute(
+                    """
+                    SELECT run_id, project_id, conversation_id, prompt, context_json,
+                           status, result, error, created_at, started_at, finished_at
+                    FROM agent_run
+                    WHERE project_id = %s AND conversation_id = %s
+                      AND status = %s AND created_at < %s
+                    ORDER BY created_at DESC, run_id DESC
+                    LIMIT %s
+                    """,
+                    (project_id, conversation_id, RunStatus.COMPLETED.value,
+                     _db_datetime(before_created_at), limit),
                 )
-                for row in reversed(rows)
-            ]
-        finally:
-            connection.close()
+                rows = cursor.fetchall()
+                return [
+                    Run(
+                        run_id=row["run_id"], project_id=row["project_id"],
+                        conversation_id=row["conversation_id"], prompt=row["prompt"],
+                        context=_decode_json(row["context_json"]),
+                        status=RunStatus(row["status"]), result=row["result"],
+                        error=row["error"], created_at=_utc_datetime(row["created_at"]),
+                        started_at=_utc_datetime(row["started_at"]),
+                        finished_at=_utc_datetime(row["finished_at"]),
+                    )
+                    for row in reversed(rows)
+                ]
 
     def list_memory_runs(
         self,
@@ -370,68 +398,62 @@ class MySQLRunRepository:
         if limit <= 0:
             raise ValueError("记忆检索数量限制必须大于 0")
         self.initialize()
-        connection = self._connect()
-        try:
-            cursor = connection.cursor(dictionary=True)
-            cursor.execute(
-                """
-                SELECT run_id, project_id, conversation_id, prompt,
-                       status, result, error, created_at, started_at, finished_at
-                FROM agent_run
-                WHERE project_id = %s AND conversation_id = %s
-                  AND status = %s
-                  AND created_at >= %s AND created_at < %s
-                  AND created_at < %s
-                ORDER BY created_at DESC, run_id DESC
-                LIMIT %s
-                """,
-                (
-                    project_id,
-                    conversation_id,
-                    RunStatus.COMPLETED.value,
-                    _db_datetime(start_created_at),
-                    _db_datetime(end_created_at),
-                    _db_datetime(before_created_at),
-                    limit,
-                ),
-            )
-            rows = cursor.fetchall()
-            return [
-                Run(
-                    run_id=row["run_id"], project_id=row["project_id"],
-                    conversation_id=row["conversation_id"], prompt=row["prompt"],
-                    context=[],
-                    status=RunStatus(row["status"]), result=row["result"],
-                    error=row["error"], created_at=_utc_datetime(row["created_at"]),
-                    started_at=_utc_datetime(row["started_at"]),
-                    finished_at=_utc_datetime(row["finished_at"]),
+        with self._pool.connection() as connection:
+            with closing(connection.cursor(dictionary=True)) as cursor:
+                cursor.execute(
+                    """
+                    SELECT run_id, project_id, conversation_id, prompt,
+                           status, result, error, created_at, started_at, finished_at
+                    FROM agent_run
+                    WHERE project_id = %s AND conversation_id = %s
+                      AND status = %s
+                      AND created_at >= %s AND created_at < %s
+                      AND created_at < %s
+                    ORDER BY created_at DESC, run_id DESC
+                    LIMIT %s
+                    """,
+                    (
+                        project_id,
+                        conversation_id,
+                        RunStatus.COMPLETED.value,
+                        _db_datetime(start_created_at),
+                        _db_datetime(end_created_at),
+                        _db_datetime(before_created_at),
+                        limit,
+                    ),
                 )
-                for row in reversed(rows)
-            ]
-        finally:
-            connection.close()
+                rows = cursor.fetchall()
+                return [
+                    Run(
+                        run_id=row["run_id"], project_id=row["project_id"],
+                        conversation_id=row["conversation_id"], prompt=row["prompt"],
+                        context=[],
+                        status=RunStatus(row["status"]), result=row["result"],
+                        error=row["error"], created_at=_utc_datetime(row["created_at"]),
+                        started_at=_utc_datetime(row["started_at"]),
+                        finished_at=_utc_datetime(row["finished_at"]),
+                    )
+                    for row in reversed(rows)
+                ]
 
     def list_project_memories(self, project_id: str) -> list[MemoryRecord]:
         """读取同项目全部长期记忆；项目索引负责缩小范围，不混入其他项目内容。"""
         self.initialize()
-        connection = self._connect()
-        try:
-            cursor = connection.cursor(dictionary=True)
-            cursor.execute(
-                "SELECT memory_id, project_id, content, source_run_id, updated_at "
-                "FROM agent_memory WHERE project_id = %s ORDER BY updated_at, memory_id",
-                (project_id,),
-            )
-            return [
-                MemoryRecord(
-                    memory_id=row["memory_id"], project_id=row["project_id"],
-                    content=row["content"], source_run_id=row["source_run_id"],
-                    updated_at=_utc_datetime(row["updated_at"]),
+        with self._pool.connection() as connection:
+            with closing(connection.cursor(dictionary=True)) as cursor:
+                cursor.execute(
+                    "SELECT memory_id, project_id, content, source_run_id, updated_at "
+                    "FROM agent_memory WHERE project_id = %s ORDER BY updated_at, memory_id",
+                    (project_id,),
                 )
-                for row in cursor.fetchall()
-            ]
-        finally:
-            connection.close()
+                return [
+                    MemoryRecord(
+                        memory_id=row["memory_id"], project_id=row["project_id"],
+                        content=row["content"], source_run_id=row["source_run_id"],
+                        updated_at=_utc_datetime(row["updated_at"]),
+                    )
+                    for row in cursor.fetchall()
+                ]
 
     def upsert_memory(
         self,
@@ -452,52 +474,50 @@ class MySQLRunRepository:
         当前不做乐观版本校验、自动合并或死锁自动重试。
         """
         self.initialize()
-        connection = self._connect()
-        try:
-            connection.start_transaction()
-            cursor = connection.cursor(dictionary=True)
-            cursor.execute(
-                "SELECT project_id FROM agent_run WHERE run_id = %s FOR UPDATE",
-                (source_run_id,),
-            )
-            source_run = cursor.fetchone()
-            if source_run is None:
-                raise ValueError("source_run_id 对应的运行不存在")
-            if source_run["project_id"] != project_id:
-                raise ValueError("source_run_id 不属于当前项目")
+        with self._pool.connection() as connection:
+            try:
+                connection.start_transaction()
+                with closing(connection.cursor(dictionary=True)) as cursor:
+                    cursor.execute(
+                        "SELECT project_id FROM agent_run WHERE run_id = %s FOR UPDATE",
+                        (source_run_id,),
+                    )
+                    source_run = cursor.fetchone()
+                    if source_run is None:
+                        raise ValueError("source_run_id 对应的运行不存在")
+                    if source_run["project_id"] != project_id:
+                        raise ValueError("source_run_id 不属于当前项目")
 
-            if create:
-                # 不使用 ON DUPLICATE KEY UPDATE，避免极小概率 ID 冲突覆盖旧记忆。
-                cursor.execute(
-                    "INSERT INTO agent_memory "
-                    "(memory_id, project_id, content, source_run_id, updated_at) "
-                    "VALUES (%s, %s, %s, %s, %s)",
-                    (memory_id, project_id, content, source_run_id, _db_datetime(now)),
-                )
-            else:
-                cursor.execute(
-                    "SELECT memory_id FROM agent_memory "
-                    "WHERE memory_id = %s AND project_id = %s FOR UPDATE",
-                    (memory_id, project_id),
-                )
-                if cursor.fetchone() is None:
-                    raise ValueError("memory_id 不存在或不属于当前项目")
-                cursor.execute(
-                    "UPDATE agent_memory SET content = %s, source_run_id = %s, updated_at = %s "
-                    "WHERE memory_id = %s AND project_id = %s",
-                    (content, source_run_id, _db_datetime(now), memory_id, project_id),
-                )
-            record = MemoryRecord(
-                memory_id=memory_id, project_id=project_id, content=content,
-                source_run_id=source_run_id, updated_at=now,
-            )
-            connection.commit()
-            return record
-        except Exception:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+                    if create:
+                        # 不使用 ON DUPLICATE KEY UPDATE，避免极小概率 ID 冲突覆盖旧记忆。
+                        cursor.execute(
+                            "INSERT INTO agent_memory "
+                            "(memory_id, project_id, content, source_run_id, updated_at) "
+                            "VALUES (%s, %s, %s, %s, %s)",
+                            (memory_id, project_id, content, source_run_id, _db_datetime(now)),
+                        )
+                    else:
+                        cursor.execute(
+                            "SELECT memory_id FROM agent_memory "
+                            "WHERE memory_id = %s AND project_id = %s FOR UPDATE",
+                            (memory_id, project_id),
+                        )
+                        if cursor.fetchone() is None:
+                            raise ValueError("memory_id 不存在或不属于当前项目")
+                        cursor.execute(
+                            "UPDATE agent_memory SET content = %s, source_run_id = %s, updated_at = %s "
+                            "WHERE memory_id = %s AND project_id = %s",
+                            (content, source_run_id, _db_datetime(now), memory_id, project_id),
+                        )
+                    record = MemoryRecord(
+                        memory_id=memory_id, project_id=project_id, content=content,
+                        source_run_id=source_run_id, updated_at=now,
+                    )
+                    connection.commit()
+                    return record
+            except Exception:
+                connection.rollback()
+                raise
 
     def update_run(self, run: Run) -> Run:
         """把 RunService 已决定的运行状态、结果、错误和起止时间写回 agent_run。
@@ -506,22 +526,19 @@ class MySQLRunRepository:
         返回传入的 Run；当前不根据影响行数判断 ID 是否存在，调用方应先查询。
         """
         self.initialize()
-        connection = self._connect()
-        try:
-            cursor = connection.cursor()
-            cursor.execute(
-                """
-                UPDATE agent_run SET status = %s, result = %s, error = %s,
-                    started_at = %s, finished_at = %s WHERE run_id = %s
-                """,
-                (run.status.value, run.result, run.error,
-                 _db_datetime(run.started_at), _db_datetime(run.finished_at),
-                 run.run_id),
-            )
-            connection.commit()
-            return run
-        finally:
-            connection.close()
+        with self._pool.connection() as connection:
+            with closing(connection.cursor()) as cursor:
+                cursor.execute(
+                    """
+                    UPDATE agent_run SET status = %s, result = %s, error = %s,
+                        started_at = %s, finished_at = %s WHERE run_id = %s
+                    """,
+                    (run.status.value, run.result, run.error,
+                     _db_datetime(run.started_at), _db_datetime(run.finished_at),
+                     run.run_id),
+                )
+                connection.commit()
+                return run
 
     def update_context(self, run_id: str, context: list[dict[str, Any]]) -> None:
         """保存本次运行真正注入 Agent 的初始上下文快照。
@@ -531,16 +548,13 @@ class MySQLRunRepository:
         不查询历史、不组装上下文，也不修改该 Run 的状态或最终结果。无返回值。
         """
         self.initialize()
-        connection = self._connect()
-        try:
-            cursor = connection.cursor()
-            cursor.execute(
-                "UPDATE agent_run SET context_json = %s WHERE run_id = %s",
-                (json.dumps(context, ensure_ascii=False), run_id),
-            )
-            connection.commit()
-        finally:
-            connection.close()
+        with self._pool.connection() as connection:
+            with closing(connection.cursor()) as cursor:
+                cursor.execute(
+                    "UPDATE agent_run SET context_json = %s WHERE run_id = %s",
+                    (json.dumps(context, ensure_ascii=False), run_id),
+                )
+                connection.commit()
 
     def append_messages(self, run_id: str, messages: list[tuple[str, Any]]) -> None:
         """由 RunService 将本次运行的过程消息追加到 agent_run_message。
@@ -554,29 +568,26 @@ class MySQLRunRepository:
         if not messages:
             return
         self.initialize()
-        connection = self._connect()
-        try:
+        with self._pool.connection() as connection:
             connection.start_transaction()
-            cursor = connection.cursor()
-            cursor.execute(
-                "SELECT COALESCE(MAX(sequence_no), 0) FROM agent_run_message "
-                "WHERE run_id = %s FOR UPDATE", (run_id,)
-            )
-            sequence = cursor.fetchone()[0]
-            now = _db_datetime(datetime.now(timezone.utc))
-            cursor.executemany(
-                """
-                INSERT INTO agent_run_message
-                (run_id, sequence_no, message_type, content_json, created_at)
-                VALUES (%s, %s, %s, %s, %s)
-                """,
-                [(run_id, sequence + offset, message_type,
-                  json.dumps(content, ensure_ascii=False), now)
-                 for offset, (message_type, content) in enumerate(messages, start=1)],
-            )
-            connection.commit()
-        finally:
-            connection.close()
+            with closing(connection.cursor()) as cursor:
+                cursor.execute(
+                    "SELECT COALESCE(MAX(sequence_no), 0) FROM agent_run_message "
+                    "WHERE run_id = %s FOR UPDATE", (run_id,)
+                )
+                sequence = cursor.fetchone()[0]
+                now = _db_datetime(datetime.now(timezone.utc))
+                cursor.executemany(
+                    """
+                    INSERT INTO agent_run_message
+                    (run_id, sequence_no, message_type, content_json, created_at)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    [(run_id, sequence + offset, message_type,
+                      json.dumps(content, ensure_ascii=False), now)
+                     for offset, (message_type, content) in enumerate(messages, start=1)],
+                )
+                connection.commit()
 
     def list_messages(self, run_id: str) -> list[RunMessage]:
         """供过程查询和 search_memory 读取一个 Run 的全部过程消息，按序号升序。
@@ -585,26 +596,23 @@ class MySQLRunRepository:
         不分页、不限制长度、不移除敏感字段；search_memory 在工具层裁剪和脱敏。
         """
         self.initialize()
-        connection = self._connect()
-        try:
-            cursor = connection.cursor(dictionary=True)
-            cursor.execute(
-                """
-                SELECT sequence_no, message_type, content_json, created_at
-                FROM agent_run_message WHERE run_id = %s ORDER BY sequence_no
-                """, (run_id,),
-            )
-            return [
-                RunMessage(
-                    sequence=row["sequence_no"], message_type=row["message_type"],
-                    content=_decode_json(row["content_json"])
-                    if row["content_json"] is not None else None,
-                    created_at=_utc_datetime(row["created_at"]),
+        with self._pool.connection() as connection:
+            with closing(connection.cursor(dictionary=True)) as cursor:
+                cursor.execute(
+                    """
+                    SELECT sequence_no, message_type, content_json, created_at
+                    FROM agent_run_message WHERE run_id = %s ORDER BY sequence_no
+                    """, (run_id,),
                 )
-                for row in cursor.fetchall()
-            ]
-        finally:
-            connection.close()
+                return [
+                    RunMessage(
+                        sequence=row["sequence_no"], message_type=row["message_type"],
+                        content=_decode_json(row["content_json"])
+                        if row["content_json"] is not None else None,
+                        created_at=_utc_datetime(row["created_at"]),
+                    )
+                    for row in cursor.fetchall()
+                ]
 
 
 class SQLiteRunRepository:
@@ -793,6 +801,15 @@ class SQLiteRunRepository:
                 (run_id,),
             ).fetchone()
             return _run_from_row(row) if row is not None else None
+
+    def get_project_owner(self, project_id: str) -> str | None:
+        """本地 SQLite 的 project 表没有用户归属，一律返回 None。
+
+        本地模式不使用按用户分层的云端目录（项目目录来自 project.local_path），
+        所以这里不是"实现遗漏"，而是本地确实没有 owner 概念。云端模式如果误配
+        成 SQLite，会因此在目录定位阶段被明确拒绝，而不是悄悄用一个共享目录。
+        """
+        return None
 
     def list_recent_completed_runs(
         self, project_id: str, conversation_id: str, before_created_at: datetime, limit: int

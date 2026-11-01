@@ -4,10 +4,22 @@ spring:
   profiles:
     # 本地开发默认不连接 MySQL；云端运行时显式设置 SPRING_PROFILES_ACTIVE=cloud。
     default: local
+  datasource:
+    hikari:
+      # 短请求和 SSE 不共享无上限的数据库连接；SSE 读取线程在打开上游后不再持有连接。
+      maximum-pool-size: ${DB_MAX_POOL_SIZE:10}
+      minimum-idle: ${DB_MIN_IDLE:2}
+      connection-timeout: ${DB_CONNECTION_TIMEOUT_MS:3000}
 
 server:
   # Java 后端对外监听的端口；Python Agent Service 默认监听 8000。
   port: ${SERVER_PORT:8080}
+  tomcat:
+    # 短请求线程数显式设上限，避免连接数直接放大成线程数和数据库连接数。
+    threads:
+      max: ${SERVER_MAX_THREADS:200}
+      min-spare: ${SERVER_MIN_SPARE_THREADS:10}
+    accept-count: ${SERVER_ACCEPT_COUNT:100}
 
 agent-service:
   # Java → Python Agent Service 的内部 HTTP 地址。
@@ -17,6 +29,16 @@ agent-service:
   # 连接超时和读取超时单位均为 milliseconds。
   connect-timeout-ms: ${AGENT_SERVICE_CONNECT_TIMEOUT_MS:3000}
   read-timeout-ms: ${AGENT_SERVICE_READ_TIMEOUT_MS:30000}
+  # SSE 和文件流使用独立资源上限；不套用上面普通短请求的 30 秒总读取等待。
+  sse:
+    connect-timeout-ms: ${AGENT_SERVICE_SSE_CONNECT_TIMEOUT_MS:3000}
+    idle-timeout-ms: ${AGENT_SERVICE_SSE_IDLE_TIMEOUT_MS:60000}
+    connection-timeout-ms: ${AGENT_SERVICE_SSE_CONNECTION_TIMEOUT_MS:1800000}
+    max-connections: ${AGENT_SERVICE_SSE_MAX_CONNECTIONS:32}
+    max-frame-bytes: ${AGENT_SERVICE_SSE_MAX_FRAME_BYTES:1048576}
+  file-stream:
+    connect-timeout-ms: ${AGENT_SERVICE_FILE_CONNECT_TIMEOUT_MS:3000}
+    read-timeout-ms: ${AGENT_SERVICE_FILE_READ_TIMEOUT_MS:60000}
 
 agent:
   context:

@@ -1,18 +1,61 @@
 """Java 请求的具体处理入口；创建服务和装配依赖放在 agent_service/app.py。"""
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 from ..config import Settings
 from ..runs.models import Run, RunMessage
-from ..runs.service import RunService
+from ..runs.service import RunCapacityError, RunService
 from ..storage.repository import RunRepository
 from ..streaming.exception import EventLimitError
+from ..workspace.exception import WorkspaceError, WorkspaceErrorCode
+from ..workspace.service import WorkspaceService
 from .schemas import CreateRunRequest, HealthResponse, RunMessagesResponse, RunStatusResponse
+from .responses import DownloadResponse
 
 
-def create_router(settings: Settings, repository: RunRepository, run_service: RunService) -> APIRouter:
+# 工作区错误码到 HTTP 状态码的翻译表，对应 Java 说明第 6.5 节。
+# Python 只表达真实失败原因，Java 再按 code 翻译成业务码，双方都不解析异常文本。
+# 413 用字面值：不同 starlette 版本对 HTTP_413_* 常量的命名不一致。
+_HTTP_STATUS_BY_WORKSPACE_CODE = {
+    WorkspaceErrorCode.INVALID_PATH.value: status.HTTP_400_BAD_REQUEST,
+    WorkspaceErrorCode.PROJECT_NOT_FOUND.value: status.HTTP_404_NOT_FOUND,
+    WorkspaceErrorCode.ENTRY_NOT_FOUND.value: status.HTTP_404_NOT_FOUND,
+    WorkspaceErrorCode.PATH_FORBIDDEN.value: status.HTTP_404_NOT_FOUND,
+    WorkspaceErrorCode.PROJECT_BUSY.value: status.HTTP_409_CONFLICT,
+    WorkspaceErrorCode.CURSOR_EXPIRED.value: status.HTTP_409_CONFLICT,
+    WorkspaceErrorCode.DOWNLOAD_LIMIT.value: status.HTTP_429_TOO_MANY_REQUESTS,
+    WorkspaceErrorCode.PREVIEW_TOO_LARGE.value: 413,
+    WorkspaceErrorCode.DOWNLOAD_TOO_LARGE.value: 413,
+    WorkspaceErrorCode.ARCHIVE_TOO_LARGE.value: 413,
+    WorkspaceErrorCode.DIRECTORY_TOO_LARGE.value: 413,
+    WorkspaceErrorCode.PROJECT_QUOTA_EXCEEDED.value: 413,
+    WorkspaceErrorCode.PREVIEW_UNSUPPORTED.value: status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+    WorkspaceErrorCode.WORKSPACE_UNAVAILABLE.value: status.HTTP_503_SERVICE_UNAVAILABLE,
+    WorkspaceErrorCode.GIT_UNAVAILABLE.value: status.HTTP_503_SERVICE_UNAVAILABLE,
+}
+
+
+def _workspace_http_error(exc: WorkspaceError) -> HTTPException:
+    """把工作区域异常翻译成只含 code/message 的 HTTP 错误。
+
+    未知错误码统一按服务不可用处理，不把异常原文、路径或底层驱动错误送到页面。
+    """
+    return HTTPException(
+        status_code=_HTTP_STATUS_BY_WORKSPACE_CODE.get(
+            exc.code, status.HTTP_503_SERVICE_UNAVAILABLE
+        ),
+        detail={"code": exc.code, "message": exc.public_message()},
+    )
+
+
+def create_router(
+    settings: Settings,
+    repository: RunRepository,
+    run_service: RunService,
+    workspace_service: WorkspaceService,
+) -> APIRouter:
     """把接口连接到当前应用的配置、数据库和任务服务，不创建第二套运行对象。"""
     router = APIRouter(prefix="/api/internal")
 
@@ -20,6 +63,8 @@ def create_router(settings: Settings, repository: RunRepository, run_service: Ru
     async def verify_token(
         x_service_token: str | None = Header(default=None),
     ) -> None:
+        """校验内部服务令牌；配置了令牌时，请求头必须与之一致，否则 401。"""
+
         if settings.internal_token and x_service_token != settings.internal_token:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -29,7 +74,123 @@ def create_router(settings: Settings, repository: RunRepository, run_service: Ru
     # Java 可以用这个接口检查 Python 服务是否正常。
     @router.get("/health", response_model=HealthResponse, dependencies=[Depends(verify_token)])
     async def health() -> HealthResponse:
+        """健康检查：只回服务名与 ok，不查库、不执行任务。"""
+
         return HealthResponse(status="ok", service=settings.service_name)
+
+    # 项目提交后准备云端目录。重复调用只补缺失目录，不清空文件、不重建 Git。
+    # 放在任务接口之前，贴合 Java 的实际调用顺序：建项目 → 准备目录 → 提交任务。
+    @router.put("/projects/{project_id}/workspace", dependencies=[Depends(verify_token)])
+    async def prepare_project_workspace(project_id: str) -> dict:
+        """准备云端项目目录，返回 ``{project_id, ready}``；重复调用只补缺失目录。"""
+
+        try:
+            # mkdir 与归属查询都是阻塞调用，不能占住事件循环。
+            prepared = await run_in_threadpool(workspace_service.prepare_project, project_id)
+        except WorkspaceError as exc:
+            raise _workspace_http_error(exc) from exc
+        return prepared.to_dict()
+
+    # 目录树：只返回当前目录的直接子项（Java 说明 §6.1、组长说明 §4.1）。
+    # 目录在前、名称稳定排序；next_cursor 非空表示还有下一页。
+    @router.get("/projects/{project_id}/files/tree", dependencies=[Depends(verify_token)])
+    async def list_project_directory(
+        project_id: str,
+        path: str = "",
+        page_size: int | None = None,
+        cursor: str | None = None,
+    ) -> dict:
+        """读取一个目录的直接子项，返回 Java 说明 §6.1 的 data 本体。
+
+        ``path`` 空串表示项目根；``next_cursor`` 非空表示还有下一页；
+        目录在分页期间变化时返回 409（CURSOR_EXPIRED），要求重读第一页。
+        """
+
+        try:
+            # 目录枚举是阻塞 IO，放进线程池，避免占住事件循环。
+            page = await run_in_threadpool(
+                workspace_service.list_directory, project_id, path, page_size, cursor
+            )
+        except WorkspaceError as exc:
+            raise _workspace_http_error(exc) from exc
+        return page.to_dict()
+
+    # 文本预览：返回完整 UTF-8 文本（Java 说明 §6.2、组长说明 §4.2）。
+    # 不用 ETag：内容随时可能被任务改动，用 ETag 会制造"看起来最新"的错觉。
+    @router.get("/projects/{project_id}/files/content", dependencies=[Depends(verify_token)])
+    async def read_project_file(
+        project_id: str, response: Response, path: str = ""
+    ) -> dict:
+        """读取一个文本文件的完整内容，返回 Java 说明 §6.2 的 data 本体。
+
+        超上限 413、非文本或非 UTF-8 为 415、不可导出或不存在为 404；
+        响应带 ``Cache-Control: no-store``，不返回 ETag。
+        """
+
+        try:
+            # 打开句柄与读取都是阻塞 IO，放进线程池。
+            preview = await run_in_threadpool(
+                workspace_service.read_text_preview, project_id, path
+            )
+        except WorkspaceError as exc:
+            raise _workspace_http_error(exc) from exc
+        response.headers["Cache-Control"] = "no-store"
+        return preview.to_dict()
+
+    # 单文件下载：返回字节流而不是 Result（Java 说明 §6.3、组长说明 §4.3）。
+    @router.get("/projects/{project_id}/files/download", dependencies=[Depends(verify_token)])
+    async def download_project_file(project_id: str, path: str = "") -> StreamingResponse:
+        """下载一个允许导出的文件，成功时直接返回文件字节。
+
+        超上限 413、下载名额满 429、不可导出或不存在 404。内容分块发送，
+        客户端断开时由句柄自身关闭并归还下载名额，不在内存里攒整个文件。
+        """
+
+        try:
+            handle = await run_in_threadpool(
+                workspace_service.open_file_download, project_id, path
+            )
+        except WorkspaceError as exc:
+            raise _workspace_http_error(exc) from exc
+
+        headers = {
+            "Content-Disposition": handle.content_disposition,
+            "Content-Length": str(handle.size_bytes),
+            # 不把 HTML/SVG 当本站页面执行；类型固定为二进制流。
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-store",
+        }
+        return DownloadResponse(
+            handle,
+            media_type="application/octet-stream",
+            headers=headers,
+        )
+
+    # 项目压缩下载：先把 ZIP 完整生成好再返回字节流（Java 说明 §6.4、组长说明 §4.4）。
+    @router.get("/projects/{project_id}/archive", dependencies=[Depends(verify_token)])
+    async def download_project_archive(project_id: str) -> StreamingResponse:
+        """把整个项目打包成 ZIP 返回，成功时直接返回字节流。
+
+        项目正在运行/打包/Git 收尾时 409；文件数、输入量、ZIP 大小或准备时长超限
+        时 413/503；同时打包数量达上限时 429。发送阶段只读已完成的临时文件。
+        """
+
+        try:
+            handle = await run_in_threadpool(
+                workspace_service.prepare_archive, project_id
+            )
+        except WorkspaceError as exc:
+            raise _workspace_http_error(exc) from exc
+
+        headers = {
+            "Content-Disposition": handle.content_disposition,
+            "Content-Length": str(handle.size_bytes),
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-store",
+        }
+        return DownloadResponse(
+            handle, media_type="application/zip", headers=headers
+        )
 
     @router.post(
         "/runs",
@@ -41,11 +202,20 @@ def create_router(settings: Settings, repository: RunRepository, run_service: Ru
         request: CreateRunRequest,
         background_tasks: BackgroundTasks,
     ) -> RunStatusResponse:
+        """创建任务并立刻返回 ID，Agent 在后台执行；容量满时 503 受控拒绝。"""
+
         # 先保存任务并立即返回 ID，耗时的 Agent 工作放到后台执行。
         try:
             run = run_service.create(request)
+        except RunCapacityError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={"code": exc.code, "message": str(exc)},
+            ) from exc
         except EventLimitError as exc:
             raise HTTPException(503, detail={"code": exc.code, "message": str(exc)}) from exc
+        except WorkspaceError as exc:
+            raise _workspace_http_error(exc) from exc
         background_tasks.add_task(run_service.execute, run.run_id)
         #下面一行返回是返回给java调用端的
         return RunStatusResponse(run_id=run.run_id, status=run.status)
@@ -57,6 +227,8 @@ def create_router(settings: Settings, repository: RunRepository, run_service: Ru
         dependencies=[Depends(verify_token)],
     )
     async def get_run(run_id: str) -> Run:
+        """读取任务状态与最终结果（不含上下文快照）；不存在返回 404，不重新执行。"""
+
         # 这里只读取任务状态，不会重新执行 Agent。
         run = repository.get_run(run_id)
         if run is None:
@@ -74,8 +246,18 @@ def create_router(settings: Settings, repository: RunRepository, run_service: Ru
             }) from exc
         if run is None:
             raise HTTPException(404, detail="run not found")
+        warnings = None
+        if run.status in {"COMPLETED", "FAILED", "CANCELLED"}:
+            try:
+                messages = await run_in_threadpool(repository.list_messages, run_id)
+                warnings = [message.content for message in messages
+                            if message.message_type == "warning" and isinstance(message.content, dict)
+                            and message.content.get("code") == "VERSION_SAVE_FAILED"][:10]
+            except Exception as exc:
+                raise HTTPException(503, detail={"code": "STORAGE_UNAVAILABLE",
+                                               "message": "任务告警暂不可用"}) from exc
         try:
-            subscription = run_service.events.subscribe(run)
+            subscription = run_service.events.subscribe(run, warnings=warnings)
         except EventLimitError as exc:
             raise HTTPException(
                 429 if exc.code == "SUBSCRIPTION_LIMIT" else 503,
@@ -92,6 +274,8 @@ def create_router(settings: Settings, repository: RunRepository, run_service: Ru
         dependencies=[Depends(verify_token)],
     )
     async def get_messages(run_id: str) -> RunMessagesResponse:
+        """读取一次运行的过程消息；任务详情只返回状态和最终结果，过程消息单独查。"""
+
         # 过程消息单独查询，任务详情只返回任务状态和最终结果。
         if repository.get_run(run_id) is None:
             raise HTTPException(status_code=404, detail="run not found")
@@ -107,6 +291,8 @@ def create_router(settings: Settings, repository: RunRepository, run_service: Ru
         dependencies=[Depends(verify_token)],
     )
     async def cancel_run(run_id: str) -> RunStatusResponse:
+        """把任务标记为 CANCELLED；不强行中断已经发出的模型请求。"""
+
         # 当前取消会改变任务状态，但不会强行中断已经发出的模型请求。
         run = run_service.cancel(run_id)
         if run is None:

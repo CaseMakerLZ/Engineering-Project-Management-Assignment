@@ -21,15 +21,7 @@
         VALUES (#{id}, #{conversationId}, #{pythonRunId}, #{createdAt})
     </insert>
 
-    <!-- 本地运行以 Python 的 agent_run 为状态真相；Java 刷新任务时同步更新该记录。 -->
-    <update id="updateExecution">
-        UPDATE agent_run
-        SET status = #{status}, result = #{result}, error = #{error},
-            started_at = #{startedAt}, finished_at = #{finishedAt}
-        WHERE run_id = #{pythonRunId}
-    </update>
-
-    <select id="findById" resultMap="AgentTaskMap">
+    <select id="findById" resultMap="AgentTaskMap" flushCache="true">
         SELECT t.id AS task_id, t.conversation_id, t.python_run_id,
                r.prompt, r.status, r.result, r.error,
                t.created_at AS task_created_at, r.started_at, r.finished_at
@@ -37,12 +29,19 @@
         WHERE t.id = #{taskId}
     </select>
 
-    <select id="findByConversationId" resultMap="AgentTaskMap">
+    <select id="findByConversationId" resultMap="AgentTaskMap" flushCache="true">
         SELECT t.id AS task_id, t.conversation_id, t.python_run_id,
                r.prompt, r.status, r.result, r.error,
                t.created_at AS task_created_at, r.started_at, r.finished_at
         FROM agent_task t JOIN agent_run r ON r.run_id = t.python_run_id
         WHERE t.conversation_id = #{conversationId}
         ORDER BY t.created_at, t.id
+    </select>
+
+    <select id="countActiveByConversationId" resultType="int" flushCache="true">
+        SELECT COUNT(*)
+        FROM agent_task t JOIN agent_run r ON r.run_id = t.python_run_id
+        WHERE t.conversation_id = #{conversationId}
+          AND r.status IN ('CREATED', 'RUNNING')
     </select>
 </mapper>

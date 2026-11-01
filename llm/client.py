@@ -12,7 +12,9 @@ class LLMClient:
         base_url: str | None = None,
         model: str | None = None,
         timeout_seconds: float = 200.0,
-    ):
+    ) -> None:
+        """按传入配置创建 SDK 客户端；缺参时回退到统一 Settings 读取。"""
+
         # 兼容旧的本地学习脚本：无参数调用仍从统一 Settings 读取，
         # 不再自行寻找 llm/.env。
         if api_key is None or base_url is None or model is None:
@@ -30,6 +32,14 @@ class LLMClient:
             timeout=timeout_seconds,
         )
         self.model = model
+
+    async def close(self) -> None:
+        """关闭底层 HTTP 连接池，由应用关闭时调用一次。
+
+        不改变模型、供应商或 SDK 调用方式；重复调用安全（httpx 的关闭是幂等的）。
+        """
+
+        await self.client.close()
 
     async def generate(
         self, input, tools: list[dict[str, Any]] | None = None,

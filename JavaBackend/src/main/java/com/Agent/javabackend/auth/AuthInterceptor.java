@@ -3,6 +3,7 @@ package com.Agent.javabackend.auth;
 import com.Agent.javabackend.Service.AuthService;
 import com.Agent.javabackend.exception.BaseException;
 import com.Agent.javabackend.exception.ErrorCode;
+import jakarta.servlet.DispatcherType;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.context.annotation.Profile;
@@ -23,6 +24,12 @@ public class AuthInterceptor implements HandlerInterceptor {
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
         if ("OPTIONS".equalsIgnoreCase(request.getMethod())) {
+            return true;
+        }
+
+        // SseEmitter 完成时会再次进入 ASYNC dispatch。首次请求已经认证并保存
+        // AuthPrincipal，异步阶段不能因为浏览器不会重发 Bearer 而丢掉身份。
+        if (request.getDispatcherType() == DispatcherType.ASYNC) {
             return true;
         }
 
