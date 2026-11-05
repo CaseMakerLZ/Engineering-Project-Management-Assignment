@@ -6,6 +6,7 @@ from typing import Any
 
 from agent.message import AgentMessage
 
+DEFAULT_MAX_STEPS = 50
 
 class AgentStatus(str,Enum):
     CREATED = "created"
@@ -19,7 +20,7 @@ class AgentState:
     #这里list[Any]的处理其实依旧很粗糙：里面可能存在多种类型str,dict,ResponseOutputMessage....,但这里先不管，之后再处理
     history: list[AgentMessage] = field(default_factory=list)
     step: int = 0
-    max_steps: int = 20
+    max_steps: int = DEFAULT_MAX_STEPS
     status: AgentStatus = AgentStatus.CREATED
     last_tool_result: Any = None
 

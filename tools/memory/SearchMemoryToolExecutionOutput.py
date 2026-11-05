@@ -19,7 +19,11 @@ class MemoryRunResult(BaseModel):
     status: str
     prompt: str
     result: str | None
+    error: str | None = None
     process: list[MemoryProcessMessage] | None = None
+    # 未请求过程时为 None；next_offset 非空表示还有更早的过程可读。
+    process_total: int | None = None
+    process_next_offset: int | None = None
 
 
 class SearchMemoryOutput(BaseModel):

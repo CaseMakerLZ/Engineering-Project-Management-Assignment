@@ -4,7 +4,8 @@ from datetime import datetime, timedelta, timezone
 import json
 from typing import Any
 
-from agent_service.runs.models import Run
+from agent.exception import public_failure_message
+from agent_service.runs.models import Run, RunStatus
 from agent_service.storage.repository import MemoryRepository
 
 from .RememberToolExecutionOutput import RememberOutput
@@ -24,11 +25,13 @@ _MAX_CONTENT_CHARS = 4_000
 
 def search_memory(
     *,
+    run_id: str | None = None,
     match_text: str | None = None,
     fuzzy_match: bool = False,
     time_range: dict[str, Any] | None = None,
     limit: int = 5,
     include_process: bool = False,
+    process_offset: int = 0,
     repository: MemoryRepository,
     project_id: str,
     conversation_id: str | None,
@@ -49,25 +52,31 @@ def search_memory(
         raise MemoryToolError(MemoryErrorCode.INVALID_ARGUMENT, "limit 必须在 1 到 10 之间")
 
     validated_args = SearchMemoryArgs(
+        run_id=run_id,
         match_text=match_text,
         fuzzy_match=fuzzy_match,
         time_range=time_range or {},
         limit=limit,
         include_process=include_process,
+        process_offset=process_offset,
     )
     match_text = validated_args.match_text
     fuzzy_match = validated_args.fuzzy_match
     limit = validated_args.limit
     include_process = validated_args.include_process
+    run_id = validated_args.run_id
+    process_offset = validated_args.process_offset
     parsed_range = validated_args.time_range
     before = _as_utc(before_created_at)
     end = _as_utc(parsed_range.end) if parsed_range.end is not None else before
     end = min(end, before)
-    start = (
-        _as_utc(parsed_range.start)
-        if parsed_range.start is not None
-        else end - timedelta(days=7)
-    )
+    if parsed_range.start is not None:
+        start = _as_utc(parsed_range.start)
+    elif run_id is not None:
+        # MySQL DATETIME 的下限是1000年；精确回溯不受默认最近一周限制。
+        start = datetime(1000, 1, 1, tzinfo=timezone.utc)
+    else:
+        start = end - timedelta(days=7)
     if start > end:
         raise MemoryToolError(MemoryErrorCode.INVALID_ARGUMENT, "时间范围起点不能晚于终点")
 
@@ -85,6 +94,7 @@ def search_memory(
             start,
             end,
             candidate_limit,
+            run_id=run_id,
         )
     except MemoryToolError:
         raise
@@ -109,7 +119,7 @@ def search_memory(
     )
 
     results = [
-        _to_result(run, repository, include_process=include_process)
+        _to_result(run, repository, include_process=include_process, process_offset=process_offset)
         for run in selected
     ]
     return SearchMemoryOutput(
@@ -192,18 +202,27 @@ def _to_result(
     repository: MemoryRepository,
     *,
     include_process: bool,
+    process_offset: int,
 ) -> MemoryRunResult:
     process = None
+    process_total = None
+    process_next_offset = None
     if include_process:
         try:
             #从 agent_run_message 解码 JSON 后返回 RunMessage 列表，无消息返回 []。
-            messages = repository.list_messages(run.run_id)[:_MAX_PROCESS_MESSAGES]
+            messages = repository.list_messages(run.run_id)
         except Exception as exc:
             raise MemoryToolError(
                 MemoryErrorCode.STORAGE_ERROR,
                 "读取历史运行过程失败",
                 cause=exc,
             ) from exc
+        # 默认看最后做过什么；往前翻页时仍保持每一段内部从旧到新的顺序。
+        process_total = len(messages)
+        end = max(0, process_total - process_offset)
+        start = max(0, end - _MAX_PROCESS_MESSAGES)
+        if start > 0:
+            process_next_offset = process_offset + (end - start)
         process = [
             MemoryProcessMessage(
                 sequence=message.sequence,
@@ -211,7 +230,7 @@ def _to_result(
                 content=_display_process_content(message.message_type, message.content),
                 created_at=message.created_at,
             )
-            for message in messages
+            for message in messages[start:end]
         ]
     return MemoryRunResult(
         run_id=run.run_id,
@@ -219,7 +238,10 @@ def _to_result(
         status=run.status.value,
         prompt=_bounded_text(run.prompt),
         result=_bounded_text(run.result) if run.result is not None else None,
+        error=public_failure_message(run.error) if run.status == RunStatus.FAILED else None,
         process=process,
+        process_total=process_total,
+        process_next_offset=process_next_offset,
     )
 
 

@@ -1,8 +1,11 @@
 spring:
+  config:
+    # 本机模式、数据库和内部凭据放在忽略文件，不需要 IDE 环境变量。
+    import: optional:classpath:application-private.yaml
   application:
     name: java-backend
   profiles:
-    # 本地开发默认不连接 MySQL；云端运行时显式设置 SPRING_PROFILES_ACTIVE=cloud。
+    # 未显式选择模式时使用 local；本机可在 application-private.yaml 中设置 active: cloud。
     default: local
   datasource:
     hikari:
@@ -39,12 +42,6 @@ agent-service:
   file-stream:
     connect-timeout-ms: ${AGENT_SERVICE_FILE_CONNECT_TIMEOUT_MS:3000}
     read-timeout-ms: ${AGENT_SERVICE_FILE_READ_TIMEOUT_MS:60000}
-
-agent:
-  context:
-    # 旧 Java ContextService 的配置；正式任务链路现由 Python 读取历史。
-    # 暂时保留以兼容尚未移除的旧实现，不再控制实际 Agent 上下文。
-    max-turns: ${AGENT_CONTEXT_MAX_TURNS:10}
 
 logging:
   level:

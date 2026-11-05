@@ -30,6 +30,8 @@ database = "agent_javabackend"
 
 [runtime]
 mode = "local"
+# 每次模型调用计一轮，并非每个工具计一轮。
+max_agent_steps = 50
 
 # 本地项目目录只从共享 SQLite 的 project.local_path 读取，由 Java 创建项目时写入。
 # TOML 不配置本地项目与目录的映射；cloud.workspace_root 仍用于云端工作区。

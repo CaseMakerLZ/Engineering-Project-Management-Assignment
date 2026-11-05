@@ -25,6 +25,10 @@ class MemoryTimeRange(BaseModel):
 class SearchMemoryArgs(BaseModel):
     """search_memory 的模型可填写参数。"""
 
+    run_id: str | None = Field(
+        default=None, min_length=1, max_length=64,
+        description="指定历史运行 ID；仍只允许当前项目、当前对话、本轮之前的成功或失败运行",
+    )
     match_text: str | None = Field(
         default=None,
         max_length=256,
@@ -36,16 +40,26 @@ class SearchMemoryArgs(BaseModel):
     )
     time_range: MemoryTimeRange = Field(
         default_factory=MemoryTimeRange,
-        description="历史时间范围；未指定边界时默认查询最近一周",
+        description="历史时间范围；默认最近一周，指定 run_id 时默认不限历史起点，仍早于本轮",
     )
     limit: int = Field(default=5, ge=1, le=10, description="最多返回的历史运行数")
     include_process: bool = Field(
         default=False,
         description="是否附带 reasoning、工具调用和工具结果等运行过程",
     )
+    process_offset: int = Field(
+        default=0, ge=0,
+        description="过程从末尾向前分段读取，每段最多100条；0为最近一段，继续时填写返回的process_next_offset并指定同一run_id",
+    )
 
     @model_validator(mode="after")
     def validate_match_text(self) -> "SearchMemoryArgs":
+        if self.run_id is not None:
+            self.run_id = self.run_id.strip()
+            if not self.run_id:
+                raise ValueError("run_id 不能为空白")
+        if self.process_offset and (not self.include_process or self.run_id is None):
+            raise ValueError("分段读取过程时必须指定 run_id 并设置 include_process=true")
         if self.match_text is not None:
             self.match_text = self.match_text.strip() or None
         return self

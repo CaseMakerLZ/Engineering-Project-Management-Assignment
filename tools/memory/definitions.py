@@ -26,7 +26,10 @@ def build_memory_tools(
             name="search_memory",
             description=(
                 "在当前项目、当前对话的历史运行中进行回忆。默认查询最近一周，"
-                "返回历史问题和最终结果；只有明确需要事件回溯时才设置 include_process=true。"
+                "返回成功或失败运行的问题、结果和失败说明；可指定 run_id 精确回溯。"
+                "只有明确需要事件回溯时才设置 include_process=true，默认返回末尾最多100条过程，"
+                "process_next_offset非空时，指定同一run_id并用它作为process_offset继续向前读取。"
+                "失败运行的文件可能已修改；继续操作前核对文件现状，不盲目重做。"
                 "fuzzy_match=true 时才启用受控文本匹配，它不是语义相似度检索。"
             ),
             args_model=SearchMemoryArgs,

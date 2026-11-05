@@ -15,6 +15,7 @@ from time import monotonic
 from typing import Any, AsyncIterator
 
 from ..runs.models import Run, RunStatus
+from agent.exception import public_failure_message
 from .exception import EventLimitError
 from .models import VisibleRun
 
@@ -166,12 +167,12 @@ class RunEvents:
                 RunStatus.CANCELLED: "run.cancelled"}[run.status]
         fields = {"status": run.status,
                   "result": run.result if run.status == RunStatus.COMPLETED else None,
-                  "error": PUBLIC_FAILURE if run.status == RunStatus.FAILED else None}
+                  "error": public_failure_message(run.error) if run.status == RunStatus.FAILED else None}
         self.encode(self._event(run.run_id, name, visible.sequence + 1, fields))
         visible.status = run.status
         visible.active_tool = None
         visible.result = run.result if run.status == RunStatus.COMPLETED else None
-        visible.error = PUBLIC_FAILURE if run.status == RunStatus.FAILED else None
+        visible.error = public_failure_message(run.error) if run.status == RunStatus.FAILED else None
         visible.finished_at = monotonic()
         self._publish(run.run_id, name, fields)
 
@@ -203,7 +204,7 @@ class RunEvents:
             # 内存过期/服务重启后，仅恢复已落库的最终结果；不谎称能恢复未保存片段。
             visible = visible or VisibleRun(
                 status=run.status, result=run.result if run.status == RunStatus.COMPLETED else None,
-                error=PUBLIC_FAILURE if run.status == RunStatus.FAILED else None,
+                error=public_failure_message(run.error) if run.status == RunStatus.FAILED else None,
             )
             if warnings:
                 visible.warnings = warnings[:10]

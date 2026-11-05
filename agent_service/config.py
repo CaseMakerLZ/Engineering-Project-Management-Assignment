@@ -2,6 +2,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from agent.state import DEFAULT_MAX_STEPS
 
 try:
     import tomllib
@@ -42,6 +43,8 @@ class Settings:
     execution_mode: str = "local"
     # 单个 Python 进程允许同时运行的 Agent 数量；满载时直接拒绝新任务，不建立无限等待队列。
     max_concurrent_runs: int = 4
+    # 一轮指一次模型请求；一轮返回多个工具时仍只计一次。
+    max_agent_steps: int = DEFAULT_MAX_STEPS
     # 目录浏览的服务端限制（组长说明 §4.1 的起步值）。
     # 每页默认 100、最大 200；单目录扫描上限 5000 项，达到即报错而不是截断。
     workspace_page_size: int = 100
@@ -65,6 +68,11 @@ class Settings:
     workspace_git_timeout_seconds: float = 30.0
     workspace_git_max_output_bytes: int = 1_048_576
     workspace_git_max_file_bytes: int = 20_971_520
+
+    def __post_init__(self) -> None:
+        if (isinstance(self.max_agent_steps, bool)
+                or not isinstance(self.max_agent_steps, int) or self.max_agent_steps < 1):
+            raise ValueError("max_agent_steps 必须是正整数")
 
     @classmethod
     def from_environment(cls, config_path: str | Path | None = None) -> "Settings":
@@ -152,6 +160,7 @@ class Settings:
                 environment_fallback,
                 4,
             ),
+            max_agent_steps=_positive_steps_setting(runtime.get("max_agent_steps"), environment_fallback),
             workspace_page_size=_int_setting(
                 "AGENT_SERVICE_WORKSPACE_PAGE_SIZE", workspace.get("page_size"), environment_fallback, 100
             ),
@@ -211,6 +220,22 @@ class Settings:
                 environment_fallback, 20_971_520,
             ),
         )
+
+
+def _positive_steps_setting(value: Any, environment_fallback: dict[str, str]) -> int:
+    """轮数只接受正整数，不把 true、浮点数或零悄悄转换成有效配置。"""
+    if value is None:
+        value = _environment_value("AGENT_SERVICE_MAX_AGENT_STEPS", environment_fallback)
+    if value is None or value == "":
+        return DEFAULT_MAX_STEPS
+    if isinstance(value, bool) or not (
+        isinstance(value, int) or isinstance(value, str) and value.isdecimal()
+    ):
+        raise ValueError("max_agent_steps 必须是正整数")
+    result = int(value)
+    if result < 1:
+        raise ValueError("max_agent_steps 必须是正整数")
+    return result
 
 
 def _load_toml(config_path: Path) -> dict[str, Any]:

@@ -19,8 +19,9 @@ from pathlib import Path
 import json
 from typing import Protocol
 
+from agent.exception import public_failure_message
 from agent.message import AgentMessage, MessageType
-from agent_service.runs.models import Run
+from agent_service.runs.models import Run, RunStatus
 from agent_service.storage.models import MemoryRecord
 
 
@@ -31,13 +32,13 @@ class HistoryRepository(Protocol):
     这样 Builder 不需要知道数据库类型，也方便用一个很小的假仓储测试。
     """
 
-    def list_recent_completed_runs(
+    def list_recent_history_runs(
         self, project_id: str, conversation_id: str, before_created_at: datetime, limit: int
     ) -> list[Run]:
         """
         返回当前运行之前的历史运行。
 
-        具体的“同项目、同对话、已完成、数量限制、时间顺序”由仓储保证；
+        具体的“同项目、同对话、成功或失败、数量限制、时间顺序”由仓储保证；
         Builder 不再重复写 SQL 条件，避免两层各自实现一套筛选规则。
         """
 
@@ -56,7 +57,8 @@ class ContextSnapshot:
     ``project_instructions`` 是项目目录中的 AGENTS.md 内容；文件不存在时
     为 None。它是项目规则，不属于长期记忆，也不会被 search_memory 搜索。
 
-    ``messages`` 包含项目长期记忆和最近已完成轮次的 user/assistant 消息；当前轮用户
+    ``messages`` 包含项目长期记忆和最近成功或失败轮次；失败说明标为历史参考资料，
+    不冒充正常的 assistant 回答。当前轮用户
     prompt 由 Agent.run() 在后面追加，因此 Builder 不会重复添加当前 prompt。
     """
 
@@ -104,7 +106,7 @@ class ContextBuilder:
         if self.max_history_turns == 0 or conversation_id is None:
             history: list[Run] = []
         else:
-            history = self.repository.list_recent_completed_runs(
+            history = self.repository.list_recent_history_runs(
                 project_id,
                 conversation_id,
                 current_created_at,
@@ -132,7 +134,24 @@ class ContextBuilder:
             ))
         for run in history:
             messages.append(AgentMessage(type=MessageType.USER, content=run.prompt))
-            if run.result is not None and run.result.strip():
+            if run.status == RunStatus.FAILED:
+                # 这里只说明已知状态；不猜测完成进度，也不自动复制全部工具过程。
+                messages.append(AgentMessage(
+                    type=MessageType.USER,
+                    content=(
+                        "上一条历史请求的运行记录（参考资料，不是新的用户请求）：\n"
+                        + json.dumps({
+                            "run_id": run.run_id,
+                            "created_at": run.created_at.isoformat(),
+                            "status": run.status.value,
+                            "error": public_failure_message(run.error),
+                        }, ensure_ascii=False)
+                        + "\n本次运行未完整结束，文件可能已修改；不能据此认定所有操作均已完成。"
+                        "需要了解已执行内容时，可通过 search_memory 指定上述 run_id、"
+                        "include_process=true 查看过程；继续修改前应核对文件现状。"
+                    ),
+                ))
+            elif run.result is not None and run.result.strip():
                 messages.append(AgentMessage(type=MessageType.ASSISTANT, content=run.result))
 
         return ContextSnapshot(

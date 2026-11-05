@@ -1,5 +1,7 @@
 # 这个文件把正式 HTTP 服务连接到现有的 Agent Core。
 from dataclasses import dataclass
+import asyncio
+import logging
 from datetime import datetime
 from pathlib import Path
 import sqlite3
@@ -10,6 +12,8 @@ from agent.agent import Agent
 from agent.context import ContextBuilder
 from agent.loop import AgentLoop
 from agent.message import AgentMessage, MessageType
+from agent.state import AgentStatus
+from agent.exception import AgentLoopLimitError, AGENT_FAILURE, INTERRUPTED_FAILURE
 from ..config import Settings
 from ..workspace.exception import WorkspaceError
 from ..workspace.policy import is_valid_identifier, resolve_project_directory
@@ -18,12 +22,16 @@ from tools.executor import ToolExecutor, ToolExecutionResult
 from tools.bootstrap import create_default_registry
 from tools.exceptions import ToolError, ToolErrorCode
 
+logger = logging.getLogger(__name__)
 
 @dataclass(slots=True)
 class RuntimeResult:
     # Agent 执行结束后返回最终回答和本次运行的过程消息。
     result: str
     messages: list[AgentMessage]
+    # 无错误时保持旧的两个参数用法；失败时仍带回本轮已有消息供批量保存。
+    error: str | None = None
+    interrupted: bool = False
 
 
 class AgentRuntime(Protocol):
@@ -211,6 +219,7 @@ class CurrentAgentRuntime:
         executor = ToolExecutor(registry)
         loop = AgentLoop(llm, registry, executor)
         agent = Agent(loop)
+        agent.state.max_steps = self.settings.max_agent_steps
 
         # 新运行链路由 Python 根据 agent_run 身份组装上下文；缺少身份信息时
         # 才兼容旧的 Java context 调用。
@@ -260,14 +269,29 @@ class CurrentAgentRuntime:
         for message in initial_messages:
             agent.state.add(message)
         initial_history_length = len(initial_messages)
-        result = await agent.run(
-            prompt, on_text=on_text,
-            on_tool_started=on_tool_started, on_tool_finished=on_tool_finished,
-        )
+        result, error, interrupted = "", None, False
+        try:
+            result = await agent.run(
+                prompt, on_text=on_text,
+                on_tool_started=on_tool_started, on_tool_finished=on_tool_finished,
+            )
+        except AgentLoopLimitError as exc:
+            error = str(exc)  # 自己构造的固定说明，不是供应商错误原文。
+        except asyncio.CancelledError:
+            # 只暂时带回已有过程；服务层批量保存后仍重新抛出取消信号。
+            error, interrupted = INTERRUPTED_FAILURE, True
+            agent.state.status = AgentStatus.FAILED
+        except Exception as exc:
+            agent.state.status = AgentStatus.FAILED
+            error = AGENT_FAILURE
+            logger.error("Agent运行失败 run_id=%s step=%s exception_type=%s",
+                         run_id, agent.state.step, type(exc).__name__)
         # 历史消息只帮助本轮回答，不重复保存为本轮新消息。
         return RuntimeResult(
             result=result,
             messages=agent.state.get_history()[initial_history_length:],
+            error=error,
+            interrupted=interrupted,
         )
 
 
