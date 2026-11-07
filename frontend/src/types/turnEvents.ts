@@ -95,6 +95,7 @@ export interface TurnStreamState {
   activeTool: TurnToolState | null
   tools: TurnToolState[]
   connectionStatus: TurnConnectionStatus
+  snapshotApplied: boolean
   sequence: number
   result: string | null
   error: string | null

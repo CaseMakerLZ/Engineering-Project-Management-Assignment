@@ -7,30 +7,19 @@ import {
   useRef,
   useState,
 } from 'react'
-import {
-  ArrowLeft,
-  ChevronRight,
-  FolderSearch,
-  FolderTree,
-  Menu,
-  MessagesSquare,
-  Plus,
-  RefreshCw,
-  Search,
-  X,
-} from 'lucide-react'
-import { Link, Outlet, useLocation, useNavigate, useParams } from 'react-router-dom'
-import { listConversations } from '../api/conversations'
+import { ArrowLeft, FolderSearch, FolderTree, Menu } from 'lucide-react'
+import { Link, Outlet, useParams } from 'react-router-dom'
 import { getProject } from '../api/projects'
 import { IS_CLOUD_MODE } from '../config'
 import { describeError, isResourceNotFound } from '../lib/errors'
-import { formatRelativeTime } from '../lib/format'
 import type { Conversation, Project } from '../types/api'
 import { useAppShell } from './AppShell'
-import { CreateConversationDialog } from './CreateConversationDialog'
-import { ProjectGlyph } from './ProjectGlyph'
 import { ProjectFilesPanel } from './ProjectFilesPanel'
-import { useToast } from './ToastProvider'
+
+const FILES_WIDTH_KEY = 'agentdesk.files.width'
+const DEFAULT_FILES_WIDTH = 360
+const MIN_FILES_WIDTH = 280
+const MIN_CHAT_WIDTH = 430
 
 interface ProjectWorkspaceContextValue {
   project: Project
@@ -48,37 +37,33 @@ interface ProjectWorkspaceContextValue {
 
 const ProjectWorkspaceContext = createContext<ProjectWorkspaceContextValue | null>(null)
 
-function sortConversations(items: Conversation[]): Conversation[] {
-  return [...items].sort((left, right) => {
-    const leftTime = new Date(left.updated_at || left.created_at).getTime()
-    const rightTime = new Date(right.updated_at || right.created_at).getTime()
-    return rightTime - leftTime
-  })
+function readFilesWidth(): number {
+  if (typeof window === 'undefined') return DEFAULT_FILES_WIDTH
+  const stored = Number(window.localStorage.getItem(FILES_WIDTH_KEY))
+  if (!Number.isFinite(stored)) return DEFAULT_FILES_WIDTH
+  return Math.max(MIN_FILES_WIDTH, Math.min(stored, 720))
 }
 
 export function ProjectWorkspaceLayout() {
   const { projectId = '' } = useParams()
   const [project, setProject] = useState<Project | null>(null)
-  const [conversations, setConversations] = useState<Conversation[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [conversationsLoading, setConversationsLoading] = useState(true)
-  const [conversationsError, setConversationsError] = useState<string | null>(null)
-  const [paneOpen, setPaneOpen] = useState(false)
   const [filesPanelOpen, setFilesPanelOpen] = useState(() =>
-    typeof window === 'undefined'
-      ? true
-      : !window.matchMedia('(max-width: 1280px)').matches,
+    typeof window === 'undefined' ? true : window.innerWidth > 1280,
   )
+  const [filesPanelWidth, setFilesPanelWidth] = useState(readFilesWidth)
   const [filesRefreshVersion, setFilesRefreshVersion] = useState(0)
   const [taskMutating, setTaskMutating] = useState(false)
   const activeTaskIdsRef = useRef(new Set<string>())
-  const [createConversationOpen, setCreateConversationOpen] = useState(false)
-  const [query, setQuery] = useState('')
-  const navigate = useNavigate()
-  const location = useLocation()
-  const { openSidebar } = useAppShell()
-  const { pushToast } = useToast()
+  const projectGenerationRef = useRef(0)
+  const workspaceRef = useRef<HTMLDivElement>(null)
+  const filesPanelWidthRef = useRef(filesPanelWidth)
+  const resizeCleanupRef = useRef<(() => void) | null>(null)
+  const { openSidebar, conversationsByProject, loadConversations, refreshConversations, openNewConversation } =
+    useAppShell()
+
+  filesPanelWidthRef.current = filesPanelWidth
 
   useEffect(() => {
     activeTaskIdsRef.current.clear()
@@ -86,92 +71,47 @@ export function ProjectWorkspaceLayout() {
   }, [projectId])
 
   useEffect(() => {
-    let cancelled = false
+    const generation = ++projectGenerationRef.current
     setLoading(true)
     setError(null)
     setProject(null)
-    setConversations([])
-    setConversationsLoading(true)
-    setConversationsError(null)
-    setQuery('')
 
-    const loadProjectData = async () => {
-      try {
-        const projectData = await getProject(projectId)
-        if (cancelled) return
+    void getProject(projectId)
+      .then((projectData) => {
+        if (generation !== projectGenerationRef.current) return
         setProject(projectData)
         setLoading(false)
-      } catch (loadError) {
-        if (!cancelled) {
-          setError(
-            isResourceNotFound(loadError)
-              ? '项目不存在、已被删除，或当前账号无权访问。'
-              : describeError(loadError),
-          )
-          setLoading(false)
-        }
-        return
-      }
+        void loadConversations(projectId)
+      })
+      .catch((loadError: unknown) => {
+        if (generation !== projectGenerationRef.current) return
+        setError(
+          isResourceNotFound(loadError)
+            ? '项目不存在、已被删除，或当前账号无权访问。'
+            : describeError(loadError),
+        )
+        setLoading(false)
+      })
 
-      try {
-        const conversationData = await listConversations(projectId)
-        if (!cancelled) {
-          setConversations(sortConversations(Array.isArray(conversationData) ? conversationData : []))
-        }
-      } catch (loadError) {
-        if (!cancelled) setConversationsError(describeError(loadError))
-      } finally {
-        if (!cancelled) setConversationsLoading(false)
-      }
-    }
-
-    void loadProjectData()
     return () => {
-      cancelled = true
+      if (generation === projectGenerationRef.current) {
+        projectGenerationRef.current += 1
+      }
     }
-  }, [projectId])
-
-  useEffect(() => {
-    setPaneOpen(false)
-  }, [location.pathname])
-
-  useEffect(() => {
-    if (paneOpen) {
-      document.body.classList.add('pane-locked')
-    } else {
-      document.body.classList.remove('pane-locked')
-    }
-    return () => document.body.classList.remove('pane-locked')
-  }, [paneOpen])
+  }, [loadConversations, projectId])
 
   useEffect(() => {
     if (!project) return
     document.title = `${project.name} · AgentDesk`
   }, [project])
 
-  const refreshConversations = useCallback(async () => {
-    setConversationsLoading(true)
-    setConversationsError(null)
-    try {
-      const data = await listConversations(projectId)
-      setConversations(sortConversations(Array.isArray(data) ? data : []))
-    } catch (loadError) {
-      setConversationsError(describeError(loadError))
-    } finally {
-      setConversationsLoading(false)
-    }
-  }, [projectId])
-
-  const handleConversationCreated = (conversation: Conversation) => {
-    setConversations((current) =>
-      sortConversations([
-        conversation,
-        ...current.filter((item) => item.conversation_id !== conversation.conversation_id),
-      ]),
-    )
-    pushToast('对话已创建，可以开始提问了。', 'success')
-    navigate(`/projects/${projectId}/conversations/${conversation.conversation_id}`)
-  }
+  useEffect(
+    () => () => {
+      resizeCleanupRef.current?.()
+      document.body.classList.remove('is-resizing-files')
+    },
+    [],
+  )
 
   const notifyTaskStarted = useCallback((taskId: string) => {
     activeTaskIdsRef.current.add(taskId)
@@ -188,33 +128,70 @@ export function ProjectWorkspaceLayout() {
     setFilesPanelOpen((current) => !current)
   }, [])
 
-  const filteredConversations = useMemo(() => {
-    const normalized = query.trim().toLowerCase()
-    if (!normalized) return conversations
-    return conversations.filter((conversation) =>
-      conversation.title.toLowerCase().includes(normalized),
-    )
-  }, [conversations, query])
+  const applyFilesWidth = useCallback((next: number, persist = false) => {
+    const workspaceWidth = workspaceRef.current?.getBoundingClientRect().width ?? window.innerWidth
+    const maximum = Math.max(MIN_FILES_WIDTH, Math.min(720, workspaceWidth - MIN_CHAT_WIDTH))
+    const clamped = Math.round(Math.max(MIN_FILES_WIDTH, Math.min(next, maximum)))
+    filesPanelWidthRef.current = clamped
+    setFilesPanelWidth(clamped)
+    if (persist) window.localStorage.setItem(FILES_WIDTH_KEY, String(clamped))
+  }, [])
 
-  const activeConversationId = useMemo(() => {
-    const match = location.pathname.match(/\/conversations\/([^/]+)/)
-    if (!match) return null
-    try {
-      return decodeURIComponent(match[1])
-    } catch {
-      return match[1]
+  const startFilesResize = (event: React.PointerEvent<HTMLElement>) => {
+    if (window.innerWidth <= 1280) return
+    event.preventDefault()
+    resizeCleanupRef.current?.()
+    const startX = event.clientX
+    const startWidth = filesPanelWidthRef.current
+    document.body.classList.add('is-resizing-files')
+
+    const handleMove = (moveEvent: PointerEvent) => {
+      applyFilesWidth(startWidth + startX - moveEvent.clientX)
     }
-  }, [location.pathname])
+    const cleanup = () => {
+      window.removeEventListener('pointermove', handleMove)
+      window.removeEventListener('pointerup', handleUp)
+      window.removeEventListener('pointercancel', handleUp)
+      window.removeEventListener('blur', handleUp)
+      document.body.classList.remove('is-resizing-files')
+      resizeCleanupRef.current = null
+    }
+    const handleUp = () => {
+      window.localStorage.setItem(FILES_WIDTH_KEY, String(filesPanelWidthRef.current))
+      cleanup()
+    }
+
+    resizeCleanupRef.current = cleanup
+    window.addEventListener('pointermove', handleMove)
+    window.addEventListener('pointerup', handleUp)
+    window.addEventListener('pointercancel', handleUp)
+    window.addEventListener('blur', handleUp)
+  }
+
+  const resizeFilesWithKeyboard = (event: React.KeyboardEvent<HTMLElement>) => {
+    if (event.key === 'Home') {
+      event.preventDefault()
+      applyFilesWidth(DEFAULT_FILES_WIDTH, true)
+      return
+    }
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
+    event.preventDefault()
+    const direction = event.key === 'ArrowLeft' ? 16 : -16
+    applyFilesWidth(filesPanelWidthRef.current + direction, true)
+  }
+
+  const bucket = conversationsByProject[projectId]
+  const conversations = bucket?.items ?? []
 
   const contextValue = useMemo<ProjectWorkspaceContextValue | null>(() => {
     if (!project) return null
     return {
       project,
       conversations,
-      conversationsLoading,
-      conversationsError,
-      refreshConversations: () => void refreshConversations(),
-      openNewConversation: () => setCreateConversationOpen(true),
+      conversationsLoading: bucket?.loading ?? true,
+      conversationsError: bucket?.error ?? null,
+      refreshConversations: () => refreshConversations(projectId),
+      openNewConversation: () => openNewConversation(projectId),
       filesPanelOpen,
       toggleFilesPanel,
       taskMutating,
@@ -222,13 +199,15 @@ export function ProjectWorkspaceLayout() {
       notifyTaskSettled,
     }
   }, [
+    bucket?.error,
+    bucket?.loading,
     conversations,
-    conversationsError,
-    conversationsLoading,
     filesPanelOpen,
     notifyTaskSettled,
     notifyTaskStarted,
+    openNewConversation,
     project,
+    projectId,
     refreshConversations,
     taskMutating,
     toggleFilesPanel,
@@ -237,11 +216,6 @@ export function ProjectWorkspaceLayout() {
   if (loading) {
     return (
       <div className="workspace-loading">
-        <div className="workspace-loading-pane">
-          <i />
-          <i />
-          <i />
-        </div>
         <div className="workspace-loading-stage">
           <span className="loading-orb" />
           <p>正在打开项目…</p>
@@ -260,11 +234,10 @@ export function ProjectWorkspaceLayout() {
           <span className="workspace-error-icon">
             <FolderSearch size={28} />
           </span>
-          <span className="eyebrow">PROJECT UNAVAILABLE</span>
           <h1>无法打开这个项目</h1>
           <p>{error || '项目不存在或已被删除。'}</p>
           <div className="error-actions">
-            <Link to="/projects" className="btn btn-primary">
+            <Link to="/projects" className="btn btn-secondary">
               <ArrowLeft size={16} />
               返回项目列表
             </Link>
@@ -277,155 +250,27 @@ export function ProjectWorkspaceLayout() {
   return (
     <ProjectWorkspaceContext.Provider value={contextValue}>
       <div
-        className={`workspace ${paneOpen ? 'pane-open' : ''} ${
-          IS_CLOUD_MODE && filesPanelOpen ? 'files-panel-open' : ''
-        }`}
+        className={`workspace ${IS_CLOUD_MODE && filesPanelOpen ? 'files-panel-open' : ''}`}
+        ref={workspaceRef}
+        style={
+          {
+            '--files-panel-current-width': `${filesPanelWidth}px`,
+          } as React.CSSProperties
+        }
       >
-        <button
-          type="button"
-          className="pane-scrim"
-          onClick={() => setPaneOpen(false)}
-          aria-label="关闭对话列表"
-          tabIndex={paneOpen ? 0 : -1}
-        />
-
-        <aside className={`conversation-pane ${paneOpen ? 'is-open' : ''}`}>
-          <div className="conversation-pane-top">
-            <button
-              type="button"
-              className="icon-btn pane-menu-button"
-              onClick={openSidebar}
-              aria-label="打开项目导航"
-            >
-              <Menu size={18} />
-            </button>
-            <ProjectGlyph projectId={project.project_id} name={project.name} size="small" />
-            <div className="conversation-pane-project-copy">
-              <span>当前项目</span>
-              <strong>{project.name}</strong>
-            </div>
-            <button
-              type="button"
-              className="icon-btn pane-close"
-              onClick={() => setPaneOpen(false)}
-              aria-label="关闭对话列表"
-            >
-              <X size={18} />
-            </button>
-          </div>
-
-          <button
-            type="button"
-            className="new-conversation-button"
-            onClick={() => setCreateConversationOpen(true)}
-          >
-            <span>
-              <Plus size={17} />
-            </span>
-            新建对话
-          </button>
-
-          <div className="conversation-list-heading">
-            <span>对话</span>
-            <small>{conversations.length}</small>
-            <button
-              type="button"
-              className="icon-btn icon-btn-xs"
-              onClick={() => void refreshConversations()}
-              aria-label="刷新对话列表"
-              title="刷新对话列表"
-            >
-              <RefreshCw size={13} className={conversationsLoading ? 'spin' : undefined} />
-            </button>
-          </div>
-
-          <label className="conversation-search">
-            <Search size={15} />
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="搜索对话"
-              aria-label="搜索对话"
-            />
-            {query ? (
-              <button type="button" onClick={() => setQuery('')} aria-label="清空搜索">
-                <X size={13} />
-              </button>
-            ) : null}
-          </label>
-
-          <div className="conversation-list">
-            {conversationsLoading ? (
-              <div className="conversation-skeleton" aria-label="正在加载对话">
-                <i />
-                <i />
-                <i />
-              </div>
-            ) : null}
-
-            {conversationsError ? (
-              <div className="conversation-inline-error">
-                <span>{conversationsError}</span>
-                <button type="button" onClick={() => void refreshConversations()}>
-                  重新加载
-                </button>
-              </div>
-            ) : null}
-
-            {!conversationsLoading && !conversationsError && filteredConversations.length === 0 ? (
-              <div className="conversation-empty">
-                <MessagesSquare size={20} />
-                <strong>{query ? '没有匹配的对话' : '还没有对话'}</strong>
-                <p>{query ? '换一个关键词试试。' : '新建一段对话，向 Agent 描述你的任务。'}</p>
-              </div>
-            ) : null}
-
-            {filteredConversations.map((conversation) => (
-              <Link
-                key={conversation.conversation_id}
-                to={`/projects/${projectId}/conversations/${conversation.conversation_id}`}
-                className={`conversation-item ${
-                  activeConversationId === conversation.conversation_id ? 'is-active' : ''
-                }`}
-              >
-                <span className="conversation-item-indicator" aria-hidden="true" />
-                <span className="conversation-item-copy">
-                  <strong>{conversation.title}</strong>
-                  <small>{formatRelativeTime(conversation.updated_at)}</small>
-                </span>
-                <ChevronRight size={14} className="conversation-item-arrow" />
-              </Link>
-            ))}
-          </div>
-
-          <Link to="/projects" className="conversation-pane-back">
-            <ArrowLeft size={15} />
-            所有项目
-          </Link>
-        </aside>
-
         <section className="workspace-stage">
           <div className="workspace-mobile-bar">
             <button
               type="button"
               className="icon-btn"
               onClick={openSidebar}
-              aria-label="打开项目导航"
+              aria-label="打开项目与对话导航"
             >
               <Menu size={19} />
             </button>
-            <div className="workspace-mobile-project">
-              <ProjectGlyph projectId={project.project_id} name={project.name} size="small" />
-              <strong>{project.name}</strong>
-            </div>
-            <button
-              type="button"
-              className="icon-btn"
-              onClick={() => setPaneOpen(true)}
-              aria-label="打开对话列表"
-            >
-              <MessagesSquare size={19} />
-            </button>
+            <strong className="workspace-mobile-project" title={project.name}>
+              {project.name}
+            </strong>
             {IS_CLOUD_MODE ? (
               <button
                 type="button"
@@ -438,17 +283,8 @@ export function ProjectWorkspaceLayout() {
             ) : null}
           </div>
           <Outlet context={contextValue} />
-          {IS_CLOUD_MODE && !filesPanelOpen && !activeConversationId ? (
-            <button
-              type="button"
-              className="files-panel-reopen"
-              onClick={toggleFilesPanel}
-            >
-              <FolderTree size={15} />
-              项目文件
-            </button>
-          ) : null}
         </section>
+
         {IS_CLOUD_MODE && filesPanelOpen ? (
           <>
             <button
@@ -462,17 +298,12 @@ export function ProjectWorkspaceLayout() {
               refreshVersion={filesRefreshVersion}
               taskMutating={taskMutating}
               onClose={() => setFilesPanelOpen(false)}
+              onResizeStart={startFilesResize}
+              onResizeKeyDown={resizeFilesWithKeyboard}
             />
           </>
         ) : null}
       </div>
-
-      <CreateConversationDialog
-        open={createConversationOpen}
-        projectId={projectId}
-        onClose={() => setCreateConversationOpen(false)}
-        onCreated={handleConversationCreated}
-      />
     </ProjectWorkspaceContext.Provider>
   )
 }
