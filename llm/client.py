@@ -1,6 +1,7 @@
 from openai import AsyncOpenAI
 from openai.types.responses import Response
-from typing import Any, Callable
+from typing import Any, Callable, Dict
+from openai import APIStatusError
 
 class LLMClient:
     """调用模型的客户端；配置由上层统一读取后传入。"""
@@ -44,24 +45,32 @@ class LLMClient:
     async def generate(
         self, input, tools: list[dict[str, Any]] | None = None,
         *, on_text: Callable[[str, str], None] | None = None,
+        max_output_tokens: int | None = None,
     ) -> Response:
         """on_text只是一个函数，不传 on_text 就等完整回答；传入则边收文字边交出去，最后仍返回完整回答。
 
         on_text 接收两个值：这段文字所属的消息 ID、刚收到的文字。
         它应快速处理文字，不在里面执行耗时操作；本方法不会把文字重复写入历史。
         """
+        limits = ({"max_output_tokens": max_output_tokens, "truncation": "disabled"}
+                  if max_output_tokens is not None else {})
         if on_text is None:
-            return await self.client.responses.create(
+            response = await self.client.responses.create(
                 model=self.model,
                 input=input,
                 tools=tools,
+                **limits,
             )
+            if response.status not in (None, "completed"):
+                raise RuntimeError("模型未完整生成回答")
+            return response
 
         stream = await self.client.responses.create(
             model=self.model,
             input=input,
             tools=tools,
             stream=True,
+            **limits,
         )
         # 即使中途报错或调用方停止等待，也要关闭这次网络连接。
         async with stream:
@@ -79,5 +88,24 @@ class LLMClient:
 
         # 网络结束不代表模型完成，不能把已经显示的几段文字冒充最终回答。
         raise RuntimeError("模型连接已结束，但未收到完整回答结束通知")
+
+    async def count_input_tokens(self, *, input, tools) -> int:
+        """同一供应商的计数接口；当前SDK通过通用post适配，不换服务商。
+
+        只有404/405/501视为不支持；鉴权/限流/网络故障不能伪装成接口不支持。
+        """
+        try:
+            result = await self.client.with_options(max_retries=0).post(
+                "/responses/input_tokens", cast_to=Dict[str, Any],
+                body={"model": self.model, "input": input, "tools": tools},
+            )
+        except APIStatusError as exc:
+            if exc.status_code in {404, 405, 501}:
+                raise NotImplementedError("模型服务未提供计数接口") from exc
+            raise
+        value = result.get("input_tokens")
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError("模型服务未返回有效计数")
+        return value
 
 

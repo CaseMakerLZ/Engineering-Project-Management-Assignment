@@ -12,6 +12,40 @@ api_key = ""
 base_url = ""
 timeout_seconds = 200.0
 
+[context]
+# 默认要求LLM上下文至少256k；较小模型请同步调小预算（k=1000）。
+# 配置不会扩大模型容量。216k输入+32k输出，另留8k余量。
+model_tokens = 256000
+max_input_tokens = 216000
+trigger_ratio = 0.8
+target_tokens = 100000
+max_output_tokens = 32000
+summary_tokens = 4000
+# auto优先服务端计数，不支持才估算；server必须准确计数；estimate仅估算。
+count_mode = "auto"
+# 按实际模型选择；不同模型用同一分词器只是估算，不保证严格不超限。
+encoding = "cl100k_base"
+
+[terminal]
+# 默认不提供本机命令执行。需要在本机测试Office时改为local，并重启Python服务。
+mode = "disabled"
+# 仅用于Windows上模拟云端Office调用；不会提供Docker隔离，正式Ubuntu部署必须保持false。
+allow_cloud_host_test = false
+
+[sandbox]
+# 只在cloud模式开启；先安装Docker并手工构建Linux镜像再改true。不改IDE。
+enabled = false
+image = "python-agent-sandbox:1"
+timeout_seconds = 60
+memory_mb = 512
+cpus = 1.0
+pids = 64
+# 项目副本、任务内临时依赖和构建缓存共用；不会写回node_modules或.venv。
+disk_mb = 256
+max_output_bytes = 65536
+# 整项任务占一个名额（含副本和写回）；默认只允许一项隔离任务同时运行。
+max_concurrent = 1
+
 [web]
 api_key = ""
 

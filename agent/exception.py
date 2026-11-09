@@ -9,7 +9,12 @@ INTERRUPTED_FAILURE = "运行协程被中断，任务未完整结束；已产生
 
 def public_failure_message(error: str | None) -> str:
     """只公开本地定义的说明；旧库及外部异常原文一律回退，不做字符串前缀放行。"""
-    if error in (AGENT_FAILURE, INTERRUPTED_FAILURE):
+    from .context.exceptions import CONTEXT_TOO_LARGE, CONTEXT_COMPACTION_FAILED, CONTEXT_COUNT_FAILED
+    if error in (AGENT_FAILURE, INTERRUPTED_FAILURE, CONTEXT_TOO_LARGE,
+                 CONTEXT_COMPACTION_FAILED, CONTEXT_COUNT_FAILED,
+                 "隔离执行环境不可用或文件检查未通过；未在宿主机执行命令，已产生的合格文件尽力保留。",
+                 "隔离执行名额已满，请稍后重试。",
+                 "部分隔离文件写回失败或存在版本冲突；请查看文件写回记录，已成功写回的文件保留。"):
         return error
     if isinstance(error, str) and re.fullmatch(
         r"已达到本次执行上限（[1-9][0-9]{0,8}轮），任务未完整结束；已产生的文件保留。", error

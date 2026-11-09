@@ -24,6 +24,7 @@ function initialState(status: TaskStatus): TurnStreamState {
     activeTool: null,
     tools: [],
     connectionStatus: 'connecting',
+    snapshotApplied: false,
     sequence: 0,
     result: null,
     error: null,
@@ -91,6 +92,7 @@ export function useTurnStream({
     let controller: AbortController | null = null
     let retryTimer: number | undefined
     let reconnectAttempt = 0
+    let connectionEpoch = 0
     let settled = false
 
     const markSettled = () => {
@@ -130,6 +132,7 @@ export function useTurnStream({
 
     const connect = async (isRetry: boolean) => {
       if (disposed) return
+      const epoch = ++connectionEpoch
       controller?.abort()
       controller = new AbortController()
       commit({
@@ -145,16 +148,17 @@ export function useTurnStream({
           taskId,
           controller.signal,
         )
-        if (disposed) return
+        if (disposed || epoch !== connectionEpoch) return
         commit({
           ...stateRef.current,
           connectionStatus: 'connected',
           channelError: null,
+          snapshotApplied: false,
           sequence: 0,
         })
 
         for await (const frame of readSSEStream(body)) {
-          if (disposed) return
+          if (disposed || epoch !== connectionEpoch) return
           const next = reduceTurnEvent(stateRef.current, frame)
           commit(next)
 
@@ -177,7 +181,11 @@ export function useTurnStream({
         }
         if (!disposed) throw new TypeError('实时连接意外结束')
       } catch (error) {
-        if (disposed || (error instanceof DOMException && error.name === 'AbortError')) {
+        if (
+          disposed ||
+          epoch !== connectionEpoch ||
+          (error instanceof DOMException && error.name === 'AbortError')
+        ) {
           return
         }
         if (

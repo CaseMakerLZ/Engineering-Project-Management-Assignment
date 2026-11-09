@@ -45,8 +45,37 @@ function toolLabel(tool: Pick<TurnToolState, 'tool_name'>): string {
   const labels: Record<string, string> = {
     read_text_file: '读取文件',
     write_text_file: '写入文件',
+    edit_text_file: '编辑文件',
+    list_directory: '浏览目录',
+    search_text: '搜索文件内容',
+    run_command: '执行命令',
+    run_shell: '执行命令',
+    search_memory: '检索项目记忆',
+    remember: '保存项目记忆',
+    search_web: '搜索网络',
+    fetch_url: '读取网页',
   }
-  return labels[tool.tool_name] ?? tool.tool_name
+  return labels[tool.tool_name] ?? '执行工具'
+}
+
+function toolErrorLabel(tool: TurnToolState): string {
+  const labels: Record<string, string> = {
+    FILESYSTEM_VERSION_CONFLICT: '文件已变化，需要重新读取',
+    FILESYSTEM_WRITE_CONFLICT: '文件写入冲突，需要重新读取',
+    FILESYSTEM_NOT_FOUND: '文件不存在',
+    FILESYSTEM_PATH_BOUNDARY: '路径超出项目范围',
+    FILESYSTEM_PROTECTED_PATH: '该文件受保护',
+    FILESYSTEM_CONTENT_UNSUPPORTED: '文件类型不受支持',
+    FILESYSTEM_RESOURCE_LIMIT: '文件超过大小限制',
+    TERMINAL_APPROVAL_REQUIRED: '需要确认后才能执行',
+    TERMINAL_DENIED: '操作未获允许',
+    TERMINAL_TIMEOUT: '命令执行超时',
+    TERMINAL_OUTPUT_LIMIT: '命令输出超过限制',
+    WEB_URL_NOT_ALLOWED: '该网址不允许访问',
+    WEB_ACCESS_DENIED: '网页访问被拒绝',
+    WEB_RATE_LIMITED: '网络请求过于频繁',
+  }
+  return (tool.error_code && labels[tool.error_code]) || '工具执行失败'
 }
 
 function connectionLabel(state: TurnStreamState): string {
@@ -176,7 +205,7 @@ export function TurnCard({ turn, busy, onRetry, streamState, onReconnect }: Turn
                       ) : tool.success === false ? (
                         <>
                           <CircleX size={12} />
-                          <small>{tool.error || '工具执行失败'}</small>
+                          <small>{toolErrorLabel(tool)}</small>
                         </>
                       ) : tool.success ? (
                         <>

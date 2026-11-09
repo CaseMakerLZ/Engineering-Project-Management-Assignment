@@ -45,6 +45,28 @@ class Settings:
     max_concurrent_runs: int = 4
     # 一轮指一次模型请求；一轮返回多个工具时仍只计一次。
     max_agent_steps: int = DEFAULT_MAX_STEPS
+    # 单次请求预算，十进制token；输入包含规则和工具定义，输出另外预留。
+    context_model_tokens: int = 256_000
+    context_max_input_tokens: int = 216_000
+    context_trigger_ratio: float = 0.8
+    context_target_tokens: int = 100_000
+    context_max_output_tokens: int = 32_000
+    context_summary_tokens: int = 4_000
+    context_count_mode: str = "auto"
+    context_encoding: str = "cl100k_base"
+    # disabled=不装配终端；local=明确允许本机终端；cloud模式下必须另开测试开关。
+    terminal_mode: str = "disabled"
+    terminal_allow_cloud_host_test: bool = False
+    # 云端容器未通过部署机验证前保持关闭。开启后无宿主命令回退。
+    sandbox_enabled: bool = False
+    sandbox_image: str = "python-agent-sandbox:1"
+    sandbox_timeout_seconds: int = 60
+    sandbox_memory_mb: int = 512
+    sandbox_cpus: float = 1.0
+    sandbox_pids: int = 64
+    sandbox_disk_mb: int = 256
+    sandbox_max_output_bytes: int = 65536
+    sandbox_max_concurrent: int = 1
     # 目录浏览的服务端限制（组长说明 §4.1 的起步值）。
     # 每页默认 100、最大 200；单目录扫描上限 5000 项，达到即报错而不是截断。
     workspace_page_size: int = 100
@@ -73,6 +95,34 @@ class Settings:
         if (isinstance(self.max_agent_steps, bool)
                 or not isinstance(self.max_agent_steps, int) or self.max_agent_steps < 1):
             raise ValueError("max_agent_steps 必须是正整数")
+        if self.context_count_mode not in {"auto", "server", "estimate"}:
+            raise ValueError("context.count_mode只能是auto、server或estimate")
+        if not isinstance(self.context_encoding, str) or not self.context_encoding.strip():
+            raise ValueError("context.encoding必须是非空字符串")
+        values = (self.context_model_tokens, self.context_max_input_tokens,
+                  self.context_target_tokens, self.context_max_output_tokens, self.context_summary_tokens)
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 1 for value in values):
+            raise ValueError("context的token预算必须是正整数")
+        if (isinstance(self.context_trigger_ratio, bool)
+                or not isinstance(self.context_trigger_ratio, (int, float))
+                or not 0 < self.context_trigger_ratio < 1):
+            raise ValueError("context.trigger_ratio必须在0和1之间")
+        if self.context_max_input_tokens + self.context_max_output_tokens >= self.context_model_tokens:
+            raise ValueError("context输入与输出预算之和必须小于模型容量")
+        if not self.context_summary_tokens < self.context_target_tokens < self.context_max_input_tokens * self.context_trigger_ratio:
+            raise ValueError("context必须满足：摘要上限 < 整理目标 < 触发线 < 输入上限")
+        if not isinstance(self.sandbox_enabled, bool):
+            raise ValueError("sandbox.enabled必须是布尔值")
+        if self.terminal_mode not in {"disabled", "local"}:
+            raise ValueError("terminal.mode只能是disabled或local")
+        if not isinstance(self.terminal_allow_cloud_host_test, bool):
+            raise ValueError("terminal.allow_cloud_host_test必须是布尔值")
+        if isinstance(self.sandbox_max_concurrent, bool) or not isinstance(self.sandbox_max_concurrent, int) or not 1 <= self.sandbox_max_concurrent <= 4:
+            raise ValueError("sandbox.max_concurrent必须是1到4的整数")
+        from tools.terminal.sandbox import SandboxLimits
+        SandboxLimits(image=self.sandbox_image, timeout_seconds=self.sandbox_timeout_seconds,
+            memory_mb=self.sandbox_memory_mb, cpus=self.sandbox_cpus, pids=self.sandbox_pids,
+            disk_mb=self.sandbox_disk_mb, max_output_bytes=self.sandbox_max_output_bytes)
 
     @classmethod
     def from_environment(cls, config_path: str | Path | None = None) -> "Settings":
@@ -96,6 +146,9 @@ class Settings:
         runtime = _section(toml_values, "runtime")
         cloud = _section(toml_values, "cloud")
         workspace = _section(toml_values, "workspace")
+        context = _section(toml_values, "context")
+        sandbox = _section(toml_values, "sandbox")
+        terminal = _section(toml_values, "terminal")
 
         execution_mode = _string_setting(
             "AGENT_SERVICE_EXECUTION_MODE", runtime.get("mode"), environment_fallback, "local"
@@ -161,6 +214,25 @@ class Settings:
                 4,
             ),
             max_agent_steps=_positive_steps_setting(runtime.get("max_agent_steps"), environment_fallback),
+            context_model_tokens=_context_int(context, "model_tokens", 256_000),
+            context_max_input_tokens=_context_int(context, "max_input_tokens", 216_000),
+            context_target_tokens=_context_int(context, "target_tokens", 100_000),
+            context_max_output_tokens=_context_int(context, "max_output_tokens", 32_000),
+            context_summary_tokens=_context_int(context, "summary_tokens", 4_000),
+            context_trigger_ratio=context.get("trigger_ratio", 0.8),
+            context_count_mode=context.get("count_mode", "auto"),
+            context_encoding=context.get("encoding", "cl100k_base"),
+            terminal_mode=terminal.get("mode", "disabled"),
+            terminal_allow_cloud_host_test=terminal.get("allow_cloud_host_test", False),
+            sandbox_enabled=sandbox.get("enabled", False),
+            sandbox_image=sandbox.get("image", "python-agent-sandbox:1"),
+            sandbox_timeout_seconds=sandbox.get("timeout_seconds", 60),
+            sandbox_memory_mb=sandbox.get("memory_mb", 512),
+            sandbox_cpus=sandbox.get("cpus", 1.0),
+            sandbox_pids=sandbox.get("pids", 64),
+            sandbox_disk_mb=sandbox.get("disk_mb", 256),
+            sandbox_max_output_bytes=sandbox.get("max_output_bytes", 65536),
+            sandbox_max_concurrent=sandbox.get("max_concurrent", 1),
             workspace_page_size=_int_setting(
                 "AGENT_SERVICE_WORKSPACE_PAGE_SIZE", workspace.get("page_size"), environment_fallback, 100
             ),
@@ -220,6 +292,14 @@ class Settings:
                 environment_fallback, 20_971_520,
             ),
         )
+
+
+def _context_int(section: dict, key: str, default: int) -> int:
+    """上下文预算只从TOML读取，拒绝布尔/小数，不隐式截断为整数。"""
+    value = section.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"context.{key}必须是正整数")
+    return value
 
 
 def _positive_steps_setting(value: Any, environment_fallback: dict[str, str]) -> int:

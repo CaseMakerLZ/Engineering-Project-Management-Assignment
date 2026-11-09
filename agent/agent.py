@@ -15,6 +15,8 @@ class Agent:
         on_tool_started: Callable[[str, str], None] | None = None,
         on_tool_finished: Callable[[str, str, ToolExecutionResult], None] | None = None,
     ) -> str:
+        if self.state.context is not None:
+            self.state.context.start(self.state, prompt)
         message = AgentMessage(
             type=MessageType.USER,
             content=prompt

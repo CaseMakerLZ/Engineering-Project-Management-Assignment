@@ -6,6 +6,32 @@ import type { ProjectFileEntry } from '../types/files'
 const MAX_CACHED_FILES = 20
 const MAX_CACHED_BYTES = 10 * 1024 * 1024
 const ROOT_PATH = ''
+const NON_TEXT_EXTENSIONS = new Set([
+  'pdf',
+  'doc',
+  'docx',
+  'xls',
+  'xlsx',
+  'ppt',
+  'pptx',
+  'zip',
+  '7z',
+  'rar',
+  'gz',
+  'png',
+  'jpg',
+  'jpeg',
+  'gif',
+  'webp',
+  'bmp',
+  'ico',
+  'mp3',
+  'wav',
+  'mp4',
+  'mov',
+  'exe',
+  'dll',
+])
 
 interface DirectoryView {
   entries: ProjectFileEntry[]
@@ -51,11 +77,17 @@ const EMPTY_PREVIEW: FilePreviewState = {
 
 function contentError(error: unknown): string {
   if (error instanceof ApiError) {
-    if (error.status === 415) return '这个文件不是受支持的 UTF-8 文本，无法预览。'
+    if (error.status === 415) return '此类型不支持文本预览，可下载后查看。'
     if (error.status === 413) return '文件超过预览大小限制，请直接下载查看。'
     if (error.status === 409) return '项目正在修改中，请等任务结束后刷新。'
   }
   return describeError(error)
+}
+
+function isKnownNonTextFile(path: string): boolean {
+  const name = path.split('/').filter(Boolean).at(-1) ?? ''
+  const extension = name.includes('.') ? name.split('.').at(-1)?.toLowerCase() : ''
+  return extension ? NON_TEXT_EXTENSIONS.has(extension) : false
 }
 
 export function useProjectFiles(projectId: string, refreshVersion: number) {
@@ -75,6 +107,7 @@ export function useProjectFiles(projectId: string, refreshVersion: number) {
   const refreshingRef = useRef(false)
   const refreshRunRef = useRef(0)
   const reloadDirectoryRef = useRef<(path: string) => void>(() => undefined)
+  const projectScopeRef = useRef(projectId)
 
   expandedRef.current = expanded
 
@@ -176,6 +209,16 @@ export function useProjectFiles(projectId: string, refreshVersion: number) {
   const openFile = useCallback(
     async (path: string): Promise<void> => {
       selectedPathRef.current = path
+      if (isKnownNonTextFile(path)) {
+        setPreview({
+          path,
+          content: null,
+          sizeBytes: 0,
+          loading: false,
+          error: '此类型不支持文本预览，可下载后查看。',
+        })
+        return
+      }
       const cached = contentCacheRef.current.get(path)
       if (cached) {
         contentCacheRef.current.delete(path)
@@ -278,10 +321,13 @@ export function useProjectFiles(projectId: string, refreshVersion: number) {
   }, [loadDirectory, openFile])
 
   useEffect(() => {
-    expandedRef.current = new Set([ROOT_PATH])
-    setExpanded(new Set([ROOT_PATH]))
-    selectedPathRef.current = null
-    setPreview(EMPTY_PREVIEW)
+    if (projectScopeRef.current !== projectId) {
+      projectScopeRef.current = projectId
+      expandedRef.current = new Set([ROOT_PATH])
+      setExpanded(new Set([ROOT_PATH]))
+      selectedPathRef.current = null
+      setPreview(EMPTY_PREVIEW)
+    }
     void refresh(true)
     return () => {
       generationRef.current += 1

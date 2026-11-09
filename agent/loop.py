@@ -33,13 +33,18 @@ class AgentLoop:
                 state.status = AgentStatus.MAX_STEPS_EXCEEDED
                 raise AgentLoopLimitError(state.max_steps)
 
+            tools = self.registry.get_llm_tools()
+            prepared_input = (await state.context.prepare(state, tools) if state.context is not None
+                              else messages_to_provider_input(state.get_history()))
+            group_start = len(state.history)
             state.increment_step()
             print(f"第{state.step}次循环")
 
             if on_text is None:
                 response = await self.client.generate(
-                    input=messages_to_provider_input(state.get_history()),
-                    tools=self.registry.get_llm_tools(),
+                    input=prepared_input,
+                    tools=tools,
+                    **({"max_output_tokens": state.context.policy.max_output_tokens} if state.context is not None else {}),
                 )
             else:
                 def receive_text(message_id: str, text: str) -> None:
@@ -53,12 +58,15 @@ class AgentLoop:
                     on_text(f"step-{state.step}:{message_id}", text)
 
                 response = await self.client.generate(
-                    input=messages_to_provider_input(state.get_history()),
-                    tools=self.registry.get_llm_tools(),
+                    input=prepared_input,
+                    tools=tools,
                     on_text=receive_text,
+                    **({"max_output_tokens": state.context.policy.max_output_tokens} if state.context is not None else {}),
                 )
 
             messages = response_output_to_messages(response.output)
+            if state.context is not None:
+                state.context.counter.observe(response)
 
             tool_calls: list = [
                 message
@@ -118,6 +126,8 @@ class AgentLoop:
                 # 工具已经返回：先记完整结果，再通知页面，避免通知失败丢掉执行记录。
                 if on_tool_finished is not None:
                     on_tool_finished(visible_call_id, tool_name, result)
+            if state.context is not None:
+                state.context.completed_group(group_start, len(state.history))
                 # state.add(
                 #     {
                 #         "type": "function_call_output",

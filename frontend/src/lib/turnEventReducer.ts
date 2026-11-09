@@ -49,6 +49,36 @@ export function reduceTurnEvent(
     }
   }
 
+  // A restarted service can republish the complete run with sequence 0. The first
+  // snapshot of a connection is authoritative even when its number is not newer.
+  if (frame.event === 'run.snapshot' && !current.snapshotApplied) {
+    const status =
+      typeof data.status === 'string' ? (data.status as TaskStatus) : current.status
+    const activeTool =
+      data.active_tool && typeof data.active_tool === 'object'
+        ? (data.active_tool as TurnToolState)
+        : null
+    return {
+      ...current,
+      status,
+      messages: normalizeMessages(data.messages),
+      activeTool: activeTool
+        ? {
+            call_id: activeTool.call_id,
+            tool_name: activeTool.tool_name,
+          }
+        : null,
+      tools: activeTool
+        ? [{ call_id: activeTool.call_id, tool_name: activeTool.tool_name }]
+        : [],
+      sequence,
+      snapshotApplied: true,
+      result: typeof data.result === 'string' ? data.result : null,
+      error: typeof data.error === 'string' ? data.error : null,
+      channelError: null,
+    }
+  }
+
   if (sequence <= current.sequence) return current
   const next: TurnStreamState = { ...current, sequence }
 
@@ -72,6 +102,7 @@ export function reduceTurnEvent(
       tools: activeTool
         ? [{ call_id: activeTool.call_id, tool_name: activeTool.tool_name }]
         : [],
+      snapshotApplied: true,
       result: typeof data.result === 'string' ? data.result : null,
       error: typeof data.error === 'string' ? data.error : null,
       channelError: null,
@@ -143,8 +174,8 @@ export function reduceTurnEvent(
           ? (data.status as TaskStatus)
           : fallbackStatus,
       activeTool: null,
-      result: typeof data.result === 'string' ? data.result : null,
-      error: typeof data.error === 'string' ? data.error : null,
+      result: typeof data.result === 'string' ? data.result : current.result,
+      error: typeof data.error === 'string' ? data.error : current.error,
     }
   }
 

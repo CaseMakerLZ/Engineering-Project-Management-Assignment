@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   AlertCircle,
+  ArrowLeft,
   ChevronDown,
   ChevronRight,
-  Code2,
   Download,
   File,
   Folder,
@@ -24,6 +24,8 @@ interface ProjectFilesPanelProps {
   refreshVersion: number
   taskMutating: boolean
   onClose: () => void
+  onResizeStart: (event: React.PointerEvent<HTMLElement>) => void
+  onResizeKeyDown: (event: React.KeyboardEvent<HTMLElement>) => void
 }
 
 interface DirectoryBranchProps {
@@ -82,6 +84,7 @@ function DirectoryBranch({
                     style={{ paddingLeft: indent }}
                     onClick={() => onToggle(entry.path)}
                     aria-expanded={childExpanded}
+                    title={entry.path}
                   >
                     {childExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
                     {childExpanded ? <FolderOpen size={15} /> : <Folder size={15} />}
@@ -138,20 +141,28 @@ function DirectoryBranch({
   )
 }
 
+function fileName(path: string): string {
+  return path.split('/').filter(Boolean).at(-1) ?? path
+}
+
 export function ProjectFilesPanel({
   projectId,
   refreshVersion,
   taskMutating,
   onClose,
+  onResizeStart,
+  onResizeKeyDown,
 }: ProjectFilesPanelProps) {
   const { directories, expanded, preview, refreshing, toggleDirectory, loadDirectory, openFile, refresh } =
     useProjectFiles(projectId, refreshVersion)
   const { pushToast } = useToast()
+  const [view, setView] = useState<'directory' | 'content'>('directory')
   const [downloadKey, setDownloadKey] = useState<string | null>(null)
   const [downloadController, setDownloadController] = useState<AbortController | null>(null)
   const downloadGuardRef = useRef(false)
   const downloadControllerRef = useRef<AbortController | null>(null)
   const mountedRef = useRef(true)
+  const treeRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     mountedRef.current = true
@@ -186,12 +197,44 @@ export function ProjectFilesPanel({
     }
   }
 
+  const openFileView = (path: string) => {
+    setView('content')
+    void openFile(path)
+  }
+
+  const returnToDirectory = () => {
+    setView('directory')
+    window.requestAnimationFrame(() => treeRef.current?.focus())
+  }
+
   return (
     <aside className="project-files-panel" aria-label="项目文件">
+      <button
+        type="button"
+        className="files-resize-handle"
+        onPointerDown={onResizeStart}
+        onKeyDown={onResizeKeyDown}
+        aria-label="调整文件面板宽度"
+        aria-orientation="vertical"
+        title="拖动调整宽度；方向键微调，Home 恢复默认"
+      />
+
       <header className="project-files-header">
-        <div>
-          <span className="eyebrow">PROJECT FILES</span>
-          <h2>项目文件</h2>
+        <div className="project-files-title">
+          {view === 'content' ? (
+            <button
+              type="button"
+              className="project-files-back"
+              onClick={returnToDirectory}
+              aria-label="返回目录"
+              title="返回目录"
+            >
+              <ArrowLeft size={15} />
+              返回目录
+            </button>
+          ) : (
+            <strong>项目文件</strong>
+          )}
         </div>
         <div className="project-files-actions">
           <button
@@ -222,60 +265,62 @@ export function ProjectFilesPanel({
         </div>
       ) : null}
 
-      <div className="project-files-toolbar">
-        <span>工作区</span>
-        {downloadController ? (
-          <button
-            type="button"
-            className="project-files-download project-files-cancel"
-            onClick={() => downloadController.abort()}
-          >
-            <X size={13} />
-            取消下载
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="project-files-download"
-            disabled={downloadKey !== null}
-            onClick={() =>
-              void startDownload('archive', (signal) =>
-                downloadProjectArchive(projectId, signal),
-              )
-            }
-          >
-            {downloadKey === 'archive' ? (
-              <LoaderCircle size={13} className="spin" />
-            ) : (
-              <Download size={13} />
-            )}
-            下载项目
-          </button>
-        )}
+      <div className="files-panel-view" hidden={view !== 'directory'}>
+        <div className="project-files-toolbar">
+          <span>目录</span>
+          {downloadController ? (
+            <button
+              type="button"
+              className="project-files-download project-files-cancel"
+              onClick={() => downloadController.abort()}
+            >
+              <X size={13} />
+              取消下载
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="project-files-download"
+              disabled={downloadKey !== null}
+              onClick={() =>
+                void startDownload('archive', (signal) =>
+                  downloadProjectArchive(projectId, signal),
+                )
+              }
+            >
+              {downloadKey === 'archive' ? (
+                <LoaderCircle size={13} className="spin" />
+              ) : (
+                <Download size={13} />
+              )}
+              下载项目
+            </button>
+          )}
+        </div>
+
+        <div className="file-tree" ref={treeRef} tabIndex={-1}>
+          <DirectoryBranch
+            path=""
+            directories={directories}
+            expanded={expanded}
+            selectedPath={preview.path}
+            level={0}
+            onToggle={toggleDirectory}
+            onLoadMore={(path, cursor) => void loadDirectory(path, cursor, true)}
+            onOpenFile={openFileView}
+          />
+        </div>
       </div>
 
-      <div className="file-tree">
-        <DirectoryBranch
-          path=""
-          directories={directories}
-          expanded={expanded}
-          selectedPath={preview.path}
-          level={0}
-          onToggle={toggleDirectory}
-          onLoadMore={(path, cursor) => void loadDirectory(path, cursor, true)}
-          onOpenFile={(path) => void openFile(path)}
-        />
-      </div>
-
-      <section className="file-preview" aria-label="文件内容预览">
-        <header className="file-preview-header">
+      <section className="files-panel-view file-content-view" hidden={view !== 'content'}>
+        <header className="file-content-header">
           <div>
-            <Code2 size={14} />
             <strong title={preview.path ?? undefined}>
-              {preview.path?.split('/').at(-1) ?? '选择文件查看内容'}
+              {preview.path ? fileName(preview.path) : '文件内容'}
             </strong>
+            {preview.path ? <small title={preview.path}>{preview.path}</small> : null}
           </div>
-          {preview.path && preview.content !== null ? (
+          {preview.path ? (
             <button
               type="button"
               className="icon-btn icon-btn-xs"
@@ -298,7 +343,7 @@ export function ProjectFilesPanel({
         </header>
         <div className="file-preview-body">
           {!preview.path ? (
-            <p>从上方目录选择一个文件。文件内容只读，不会在浏览器中执行。</p>
+            <p>从目录选择一个文件。</p>
           ) : preview.loading ? (
             <span className="file-preview-status">
               <LoaderCircle size={15} className="spin" />

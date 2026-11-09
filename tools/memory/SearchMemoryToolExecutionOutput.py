@@ -11,6 +11,8 @@ class MemoryProcessMessage(BaseModel):
     message_type: str
     content: dict[str, Any] | str | None
     created_at: datetime
+    content_next_offset: int | None = None
+    content_total_chars: int | None = None
 
 #只被search_memory使用
 class MemoryRunResult(BaseModel):

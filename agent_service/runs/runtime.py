@@ -5,11 +5,15 @@ import logging
 from datetime import datetime
 from pathlib import Path
 import sqlite3
-from functools import wraps
+import threading
+from functools import wraps, partial
 from typing import Any, Callable, Protocol
 
 from agent.agent import Agent
 from agent.context import ContextBuilder
+from agent.context.manager import ContextManager, ContextPolicy
+from agent.context.tokens import TokenCounter
+from agent.context.exceptions import ContextError
 from agent.loop import AgentLoop
 from agent.message import AgentMessage, MessageType
 from agent.state import AgentStatus
@@ -21,6 +25,8 @@ from llm.client import LLMClient
 from tools.executor import ToolExecutor, ToolExecutionResult
 from tools.bootstrap import create_default_registry
 from tools.exceptions import ToolError, ToolErrorCode
+from tools.terminal.sandbox import ContainerExecutor, SandboxLimits
+from tools.terminal.workspace import SandboxWorkspace, WorkspaceLimits
 
 logger = logging.getLogger(__name__)
 
@@ -172,9 +178,91 @@ class CurrentAgentRuntime:
         self.repository = repository
         # 应用级共享模型客户端；为 None 时退回每个任务创建一次（测试与单脚本）。
         self.llm_client = llm_client
+        self._sandbox_slots = threading.BoundedSemaphore(settings.sandbox_max_concurrent)
+        self._sandbox_unhealthy = False
+
+    async def run(self, prompt: str, project_id: str | None = None,
+                  context: list[dict[str, Any]] | None = None, *, run_id: str | None = None,
+                  conversation_id: str | None = None, created_at: datetime | None = None,
+                  on_text=None, on_tool_started=None, on_tool_finished=None) -> RuntimeResult:
+        """云端开启隔离后整个任务使用同一副本；无Docker就受控失败，不退回宿主执行。"""
+        arguments = dict(project_id=project_id, context=context, run_id=run_id,
+                         conversation_id=conversation_id, created_at=created_at,
+                         on_text=on_text, on_tool_started=on_tool_started, on_tool_finished=on_tool_finished)
+        if not (self.settings.execution_mode.lower() == "cloud" and self.settings.sandbox_enabled):
+            return await self._run_agent(prompt, **arguments)
+        failure = "隔离执行环境不可用或文件检查未通过；未在宿主机执行命令，已产生的合格文件尽力保留。"
+        if self._sandbox_unhealthy:
+            return RuntimeResult("", [], error=failure)
+        if not self._sandbox_slots.acquire(blocking=False):
+            return RuntimeResult("", [], error="隔离执行名额已满，请稍后重试。")
+        workspace, container = None, None
+        result = RuntimeResult("", [], error=failure)
+        try:
+            root = resolve_project_root(self.settings, project_id, repository=self.repository)
+            worker = asyncio.create_task(asyncio.to_thread(SandboxWorkspace, root, WorkspaceLimits()))
+            try:
+                workspace = await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                workspace = await worker
+                raise
+            container = ContainerExecutor(workspace, SandboxLimits(
+                image=self.settings.sandbox_image, timeout_seconds=self.settings.sandbox_timeout_seconds,
+                memory_mb=self.settings.sandbox_memory_mb, cpus=self.settings.sandbox_cpus,
+                pids=self.settings.sandbox_pids, disk_mb=self.settings.sandbox_disk_mb,
+                max_output_bytes=self.settings.sandbox_max_output_bytes))
+            worker = asyncio.create_task(asyncio.to_thread(container.start))
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                await worker
+                raise
+            result = await self._run_agent(prompt, **arguments, sandbox_workspace=workspace,
+                                           sandbox_executor=container)
+        except asyncio.CancelledError:
+            result.error, result.interrupted = INTERRUPTED_FAILURE, True
+        except Exception as exc:
+            logger.error("隔离运行失败 run_id=%s exception_type=%s", run_id, type(exc).__name__)
+        finally:
+            try:
+                if workspace is not None:
+                    # 先删除任务容器，再决定是否把任务副本写回真实项目。
+                    if container is not None:
+                        worker = asyncio.create_task(asyncio.to_thread(container.close))
+                        try:
+                            await asyncio.shield(worker)
+                        except asyncio.CancelledError:
+                            await worker
+                            result.error, result.interrupted = INTERRUPTED_FAILURE, True
+                    # 清理无法确认时不写回，不能接受仍在活动环境中的文件。
+                    if container is not None and not container._unsafe:
+                        worker = asyncio.create_task(asyncio.to_thread(workspace.publish))
+                        try:
+                            report = await asyncio.shield(worker)
+                        except asyncio.CancelledError:
+                            report = await worker
+                            result.error, result.interrupted = INTERRUPTED_FAILURE, True
+                        result.messages.append(AgentMessage(MessageType.WORKSPACE_SYNC, report))
+                        if report["failed"]:
+                            result.error = "部分隔离文件写回失败或存在版本冲突；请查看文件写回记录，已成功写回的文件保留。"
+                            result.result = ""
+                    elif container is not None:
+                        self._sandbox_unhealthy = True
+                        result.error = failure
+            except Exception as exc:
+                result.error, result.result = failure, ""
+                logger.error("隔离文件收尾失败 run_id=%s exception_type=%s", run_id, type(exc).__name__)
+            finally:
+                if workspace is not None:
+                    try:
+                        workspace.close()
+                    except Exception:
+                        logger.error("隔离副本清理失败 run_id=%s", run_id)
+                self._sandbox_slots.release()
+        return result
 
     # 以后替换 Agent 实现时，只需要增加新的 Runtime，不用修改任务服务。
-    async def run(
+    async def _run_agent(
         self,
         prompt: str,
         project_id: str | None = None,
@@ -186,6 +274,8 @@ class CurrentAgentRuntime:
         on_text: Callable[[str, str], None] | None = None,
         on_tool_started: Callable[[str, str], None] | None = None,
         on_tool_finished: Callable[[str, str, ToolExecutionResult], None] | None = None,
+        sandbox_workspace=None,
+        sandbox_executor=None,
     ) -> RuntimeResult:
         #组装Agent
         # SSE 第一步仅预留可见文字回调；后续接模型流时才调用，不能拆分最终结果假装流式。
@@ -199,8 +289,16 @@ class CurrentAgentRuntime:
             model=self.settings.llm_model_id,
             timeout_seconds=self.settings.llm_timeout_seconds,
         )
-        project_root = resolve_project_root(
+        project_root = sandbox_workspace.root if sandbox_workspace is not None else resolve_project_root(
             self.settings, project_id, repository=self.repository
+        )
+        cloud_host_test = (
+            self.settings.execution_mode.lower() == "cloud"
+            and self.settings.terminal_allow_cloud_host_test
+        )
+        local_terminal_enabled = (
+            self.settings.terminal_mode == "local"
+            and (self.settings.execution_mode.lower() == "local" or cloud_host_test)
         )
         registry = create_default_registry(
             project_root=project_root,
@@ -210,6 +308,11 @@ class CurrentAgentRuntime:
             memory_conversation_id=conversation_id,
             memory_before_created_at=created_at,
             memory_run_id=run_id,
+            sandbox_executor=sandbox_executor,
+            local_terminal_enabled=local_terminal_enabled,
+            local_terminal_authorizer=(lambda _request: True) if local_terminal_enabled else None,
+            local_terminal_timeout_seconds=self.settings.sandbox_timeout_seconds,
+            local_terminal_max_output_bytes=self.settings.sandbox_max_output_bytes,
         )
         if self.settings.execution_mode.lower() == "cloud":
             # Git 元数据只由服务端维护；文件工具不能读取/改写它（含 Windows 大小写）。
@@ -220,6 +323,27 @@ class CurrentAgentRuntime:
         loop = AgentLoop(llm, registry, executor)
         agent = Agent(loop)
         agent.state.max_steps = self.settings.max_agent_steps
+        policy = ContextPolicy(
+            model_tokens=self.settings.context_model_tokens,
+            max_input_tokens=self.settings.context_max_input_tokens,
+            trigger_ratio=self.settings.context_trigger_ratio,
+            target_tokens=self.settings.context_target_tokens,
+            max_output_tokens=self.settings.context_max_output_tokens,
+            summary_tokens=self.settings.context_summary_tokens,
+        )
+        agent.state.context = ContextManager(llm, TokenCounter(
+            llm, mode=self.settings.context_count_mode, encoding=self.settings.context_encoding,
+        ), policy, run_id=run_id, recall_enabled=(conversation_id is not None
+            and self.repository is not None and project_id is not None and created_at is not None))
+        # 本任务内存过程绑定给现有工具；模型不能指定state或别人的项目边界。
+        if conversation_id is not None and run_id is not None:
+            try:
+                memory_tool = registry.get("search_memory")
+            except KeyError:
+                pass
+            else:
+                memory_tool.function = partial(memory_tool.function, current_state=agent.state,
+                                               current_run_id=run_id, current_prompt=prompt)
 
         # 新运行链路由 Python 根据 agent_run 身份组装上下文；缺少身份信息时
         # 才兼容旧的 Java context 调用。
@@ -268,6 +392,7 @@ class CurrentAgentRuntime:
 
         for message in initial_messages:
             agent.state.add(message)
+        agent.state.initial_history_length = len(initial_messages)
         initial_history_length = len(initial_messages)
         result, error, interrupted = "", None, False
         try:
@@ -277,6 +402,9 @@ class CurrentAgentRuntime:
             )
         except AgentLoopLimitError as exc:
             error = str(exc)  # 自己构造的固定说明，不是供应商错误原文。
+        except ContextError as exc:
+            error = str(exc)
+            agent.state.status = AgentStatus.FAILED
         except asyncio.CancelledError:
             # 只暂时带回已有过程；服务层批量保存后仍重新抛出取消信号。
             error, interrupted = INTERRUPTED_FAILURE, True
@@ -289,7 +417,8 @@ class CurrentAgentRuntime:
         # 历史消息只帮助本轮回答，不重复保存为本轮新消息。
         return RuntimeResult(
             result=result,
-            messages=agent.state.get_history()[initial_history_length:],
+            messages=(agent.state.get_history()[initial_history_length:]
+                      + agent.state.context.summaries),
             error=error,
             interrupted=interrupted,
         )
