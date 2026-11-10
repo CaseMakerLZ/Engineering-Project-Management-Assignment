@@ -2,10 +2,13 @@
 #踩过的坑：对于openai的apikey，可以用previous_id来自动管理，但是其他的模型就不能这样处理，需要手动管理
 from dataclasses import dataclass,field
 from enum import Enum
-from typing import Any
+from typing import Any, TYPE_CHECKING
+if TYPE_CHECKING:
+    from agent.context.manager import ContextManager
 
 from agent.message import AgentMessage
 
+DEFAULT_MAX_STEPS = 50
 
 class AgentStatus(str,Enum):
     CREATED = "created"
@@ -19,9 +22,12 @@ class AgentState:
     #这里list[Any]的处理其实依旧很粗糙：里面可能存在多种类型str,dict,ResponseOutputMessage....,但这里先不管，之后再处理
     history: list[AgentMessage] = field(default_factory=list)
     step: int = 0
-    max_steps: int = 20
+    max_steps: int = DEFAULT_MAX_STEPS
     status: AgentStatus = AgentStatus.CREATED
     last_tool_result: Any = None
+    # history始终保留原始消息；context只管理发给模型的工作副本。
+    context: "ContextManager | None" = field(default=None, repr=False)
+    initial_history_length: int = 0
 
     def add(self,message: AgentMessage) -> None:
         self.history.append(message)

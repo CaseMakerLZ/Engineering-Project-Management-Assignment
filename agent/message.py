@@ -12,8 +12,12 @@ class MessageType(str,Enum):
     REASONING = "reasoning"
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
+    CONTEXT_SUMMARY = "context_summary"  # 收尾保存交接说明，不作为模型原始输出伪造。
+    WORKSPACE_SYNC = "workspace_sync"  # 隔离产物写回清单，单独保存，不冒充模型回答。
 
 @dataclass
 class AgentMessage:
     type: MessageType
     content: Any
+    # 仅控制工作上下文，不改变落库结构；项目长期记忆不由运行时摘要改写。
+    context_fixed: bool = False

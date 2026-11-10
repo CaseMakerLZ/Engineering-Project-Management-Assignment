@@ -5,6 +5,7 @@ from tools.executor import ToolExecutor, ToolExecutionResult
 from tools.registry import ToolRegistry
 from .message import AgentMessage, MessageType
 from .state import AgentState
+from .exception import AgentLoopLimitError
 from llm.mapper import messages_to_provider_input, response_output_to_messages
 
 
@@ -30,15 +31,20 @@ class AgentLoop:
 
             if not state.can_continue():
                 state.status = AgentStatus.MAX_STEPS_EXCEEDED
-                return None
+                raise AgentLoopLimitError(state.max_steps)
 
+            tools = self.registry.get_llm_tools()
+            prepared_input = (await state.context.prepare(state, tools) if state.context is not None
+                              else messages_to_provider_input(state.get_history()))
+            group_start = len(state.history)
             state.increment_step()
             print(f"第{state.step}次循环")
 
             if on_text is None:
                 response = await self.client.generate(
-                    input=messages_to_provider_input(state.get_history()),
-                    tools=self.registry.get_llm_tools(),
+                    input=prepared_input,
+                    tools=tools,
+                    **({"max_output_tokens": state.context.policy.max_output_tokens} if state.context is not None else {}),
                 )
             else:
                 def receive_text(message_id: str, text: str) -> None:
@@ -52,12 +58,15 @@ class AgentLoop:
                     on_text(f"step-{state.step}:{message_id}", text)
 
                 response = await self.client.generate(
-                    input=messages_to_provider_input(state.get_history()),
-                    tools=self.registry.get_llm_tools(),
+                    input=prepared_input,
+                    tools=tools,
                     on_text=receive_text,
+                    **({"max_output_tokens": state.context.policy.max_output_tokens} if state.context is not None else {}),
                 )
 
             messages = response_output_to_messages(response.output)
+            if state.context is not None:
+                state.context.counter.observe(response)
 
             tool_calls: list = [
                 message
@@ -87,13 +96,16 @@ class AgentLoop:
                     )
                 except Exception:
                     # 执行器通常会返回失败结果；若意外抛错，先通知失败再保留原异常。
+                    # 先记下这次意外失败，收尾保存时才不会只有调用而没有失败原因。
+                    state.add(AgentMessage(MessageType.TOOL_RESULT, {
+                        "call_id": tool_call_content["call_id"],
+                        "output": "Tool Error [TOOL_INTERNAL_ERROR]: 工具执行意外中断",
+                    }))
                     if on_tool_finished is not None:
                         on_tool_finished(visible_call_id, tool_name, ToolExecutionResult(
                             success=False, error_code="TOOL_INTERNAL_ERROR",
                         ))
                     raise
-                if on_tool_finished is not None:
-                    on_tool_finished(visible_call_id, tool_name, result)
                 #TODO: 这个last_tool_result暂时没有什么作用，到时候可能可以丢掉而选择更好的方案
                 state.last_tool_result = result
 
@@ -111,6 +123,11 @@ class AgentLoop:
 
                 #这里进行了一次重构
                 state.add(message)
+                # 工具已经返回：先记完整结果，再通知页面，避免通知失败丢掉执行记录。
+                if on_tool_finished is not None:
+                    on_tool_finished(visible_call_id, tool_name, result)
+            if state.context is not None:
+                state.context.completed_group(group_start, len(state.history))
                 # state.add(
                 #     {
                 #         "type": "function_call_output",

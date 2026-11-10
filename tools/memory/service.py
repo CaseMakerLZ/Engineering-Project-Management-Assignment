@@ -4,7 +4,10 @@ from datetime import datetime, timedelta, timezone
 import json
 from typing import Any
 
-from agent_service.runs.models import Run
+from agent.exception import public_failure_message
+from agent_service.runs.models import Run, RunStatus, RunMessage
+from agent.message import MessageType
+from llm.mapper import reasoning_display_content
 from agent_service.storage.repository import MemoryRepository
 
 from .RememberToolExecutionOutput import RememberOutput
@@ -24,15 +27,22 @@ _MAX_CONTENT_CHARS = 4_000
 
 def search_memory(
     *,
+    run_id: str | None = None,
     match_text: str | None = None,
     fuzzy_match: bool = False,
     time_range: dict[str, Any] | None = None,
     limit: int = 5,
     include_process: bool = False,
+    process_offset: int = 0,
+    process_sequence: int | None = None,
+    content_offset: int = 0,
     repository: MemoryRepository,
     project_id: str,
     conversation_id: str | None,
     before_created_at: datetime,
+    current_state=None,
+    current_run_id: str | None = None,
+    current_prompt: str | None = None,
 ) -> SearchMemoryOutput:
     """在当前项目、当前对话内查询历史运行。
 
@@ -49,25 +59,55 @@ def search_memory(
         raise MemoryToolError(MemoryErrorCode.INVALID_ARGUMENT, "limit 必须在 1 到 10 之间")
 
     validated_args = SearchMemoryArgs(
+        run_id=run_id,
         match_text=match_text,
         fuzzy_match=fuzzy_match,
         time_range=time_range or {},
         limit=limit,
         include_process=include_process,
+        process_offset=process_offset,
+        process_sequence=process_sequence,
+        content_offset=content_offset,
     )
     match_text = validated_args.match_text
     fuzzy_match = validated_args.fuzzy_match
     limit = validated_args.limit
     include_process = validated_args.include_process
+    run_id = validated_args.run_id
+    process_offset = validated_args.process_offset
+    process_sequence = validated_args.process_sequence
+    content_offset = validated_args.content_offset
     parsed_range = validated_args.time_range
     before = _as_utc(before_created_at)
+    # 只能显式读取服务端绑定的当前运行；不把它混入默认历史查询。
+    # state.history从未压缩，故本轮尚未落库的过程也能找回。
+    if run_id is not None and run_id == current_run_id and current_state is not None:
+        messages = None
+        if include_process:
+            messages = []
+            for index, message in enumerate(list(current_state.history[current_state.initial_history_length:]), 1):
+                content = message.content
+                if message.type == MessageType.REASONING:
+                    text, display_type = reasoning_display_content(content)
+                    content = {"display_text": text, "display_type": display_type}
+                messages.append(RunMessage(sequence=index, message_type=message.type.value,
+                                           content=content, created_at=before))
+        current = Run(run_id=run_id, project_id=project_id, conversation_id=conversation_id,
+                      prompt=current_prompt or "", status=RunStatus.RUNNING, result=None,
+                      error=None, created_at=before)
+        result = _to_result(current, repository, include_process=include_process,
+                            process_offset=process_offset, process_messages=messages,
+                            process_sequence=process_sequence, content_offset=content_offset)
+        return SearchMemoryOutput(results=[result], returned_count=1, has_more=False, truncated=False)
     end = _as_utc(parsed_range.end) if parsed_range.end is not None else before
     end = min(end, before)
-    start = (
-        _as_utc(parsed_range.start)
-        if parsed_range.start is not None
-        else end - timedelta(days=7)
-    )
+    if parsed_range.start is not None:
+        start = _as_utc(parsed_range.start)
+    elif run_id is not None:
+        # MySQL DATETIME 的下限是1000年；精确回溯不受默认最近一周限制。
+        start = datetime(1000, 1, 1, tzinfo=timezone.utc)
+    else:
+        start = end - timedelta(days=7)
     if start > end:
         raise MemoryToolError(MemoryErrorCode.INVALID_ARGUMENT, "时间范围起点不能晚于终点")
 
@@ -85,6 +125,7 @@ def search_memory(
             start,
             end,
             candidate_limit,
+            run_id=run_id,
         )
     except MemoryToolError:
         raise
@@ -109,7 +150,8 @@ def search_memory(
     )
 
     results = [
-        _to_result(run, repository, include_process=include_process)
+        _to_result(run, repository, include_process=include_process, process_offset=process_offset,
+                   process_sequence=process_sequence, content_offset=content_offset)
         for run in selected
     ]
     return SearchMemoryOutput(
@@ -192,34 +234,68 @@ def _to_result(
     repository: MemoryRepository,
     *,
     include_process: bool,
+    process_offset: int,
+    process_messages: list[RunMessage] | None = None,
+    process_sequence: int | None = None,
+    content_offset: int = 0,
 ) -> MemoryRunResult:
     process = None
+    process_total = None
+    process_next_offset = None
     if include_process:
         try:
             #从 agent_run_message 解码 JSON 后返回 RunMessage 列表，无消息返回 []。
-            messages = repository.list_messages(run.run_id)[:_MAX_PROCESS_MESSAGES]
+            messages = (process_messages if process_messages is not None
+                        else repository.list_messages(run.run_id))
         except Exception as exc:
             raise MemoryToolError(
                 MemoryErrorCode.STORAGE_ERROR,
                 "读取历史运行过程失败",
                 cause=exc,
             ) from exc
-        process = [
-            MemoryProcessMessage(
+        # 默认看最后做过什么；往前翻页时仍保持每一段内部从旧到新的顺序。
+        process_total = len(messages)
+        end = max(0, process_total - process_offset)
+        start = max(0, end - _MAX_PROCESS_MESSAGES)
+        if start > 0:
+            process_next_offset = process_offset + (end - start)
+        selected = messages[start:end] if process_sequence is None else [
+            message for message in messages if message.sequence == process_sequence]
+        if process_sequence is not None:
+            process_next_offset = None
+        process = []
+        for message in selected:
+            # reasoning只展示服务商明确给出的可读内容，不分页暴露原始加密项。
+            raw = message.content
+            if message.message_type == "reasoning":
+                raw = ({"display_text": raw.get("display_text"),
+                        "display_type": raw.get("display_type", "reasoning_text")}
+                       if isinstance(raw, dict) else {"display_text": raw})
+            # 工具结果按output正文翻页，偏移与工作上下文的预览字符位置一致。
+            if message.message_type == "tool_result" and isinstance(raw, dict) and isinstance(raw.get("output"), str):
+                raw = raw["output"]
+            text = raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False, default=str)
+            next_offset = content_offset + _MAX_CONTENT_CHARS if len(text) > content_offset + _MAX_CONTENT_CHARS else None
+            content = (text[content_offset:content_offset + _MAX_CONTENT_CHARS] if process_sequence is not None or len(text) > _MAX_CONTENT_CHARS
+                       else _display_process_content(message.message_type, message.content))
+            process.append(MemoryProcessMessage(
                 sequence=message.sequence,
                 message_type=message.message_type,
-                content=_display_process_content(message.message_type, message.content),
+                content=content,
                 created_at=message.created_at,
-            )
-            for message in messages
-        ]
+                content_total_chars=len(text),
+                content_next_offset=next_offset,
+            ))
     return MemoryRunResult(
         run_id=run.run_id,
         created_at=run.created_at,
         status=run.status.value,
         prompt=_bounded_text(run.prompt),
         result=_bounded_text(run.result) if run.result is not None else None,
+        error=public_failure_message(run.error) if run.status == RunStatus.FAILED else None,
         process=process,
+        process_total=process_total,
+        process_next_offset=process_next_offset,
     )
 
 

@@ -57,6 +57,17 @@ _EXCLUDED_SUFFIXES = frozenset({
     "sqlite", "sqlite3", "db", "db-journal", "mdb",
 })
 
+
+def container_export_policy() -> dict[str, list[str]]:
+    """把现有导出排除项交给受信任的容器同步程序，避免维护第二份名单。"""
+
+    return {
+        "directories": sorted(_EXCLUDED_DIR_NAMES),
+        "files": sorted(_EXCLUDED_FILE_NAMES),
+        "environment_templates": sorted(_ENV_TEMPLATE_NAMES),
+        "suffixes": sorted(_EXCLUDED_SUFFIXES),
+    }
+
 # 可预览的文本扩展名；不含 pdf/zip/图片等二进制格式。
 _TEXT_SUFFIXES = frozenset({
     "txt", "md", "markdown", "rst", "adoc", "log",

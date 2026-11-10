@@ -19,11 +19,13 @@ tools/目录结构
 开发手册
 jmeter.log
 AGENTS.md
+deploy-release/
 # Local environment variables and secrets
 .env
 .env.*
 !frontend/.env.example
 config.toml
+JavaBackend/src/main/resources/application-private.yaml
 /agent_service/tests/
 
 # Local learning notes and the API test are kept in the workspace but not committed.
@@ -72,3 +74,4 @@ build/
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
+deploy/deploy-ubuntu.sh

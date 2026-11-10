@@ -11,7 +11,7 @@
 调用关系：
     RunService          -> create_run / get_run / update_run / append_messages
     CurrentAgentRuntime -> update_context
-    ContextBuilder      -> list_recent_completed_runs / list_project_memories
+    ContextBuilder      -> list_recent_history_runs / list_project_memories
     search_memory 工具  -> list_memory_runs / list_messages
     remember 工具       -> upsert_memory
 
@@ -117,10 +117,10 @@ class RunRepository(Protocol):
         ...
 
     # 历史读取：ContextBuilder 使用近期历史；记忆工具使用独立的 MemoryRepository。
-    def list_recent_completed_runs(
+    def list_recent_history_runs(
         self, project_id: str, conversation_id: str, before_created_at: datetime, limit: int
     ) -> list[Run]:
-        """供 ContextBuilder 取本轮之前同项目同对话的最近已完成运行，正序返回。"""
+        """供 ContextBuilder 取本轮之前同项目同对话最近成功或失败的运行，正序返回。"""
         ...
 
     # 项目归属：云端工作区按用户分层，真实目录必须由可信的 owner_id 决定，
@@ -147,8 +147,10 @@ class MemoryRepository(Protocol):
         start_created_at: datetime,
         end_created_at: datetime,
         limit: int,
+        *,
+        run_id: str | None = None,
     ) -> list[Run]:
-        """查询同项目、同对话、时间范围内的已完成运行，供 search_memory 使用。"""
+        """回溯成功或失败运行；可指定 ID，但仍须符合项目、对话和时间边界。"""
         ...
 
     def list_messages(self, run_id: str) -> list[RunMessage]:
@@ -335,10 +337,10 @@ class MySQLRunRepository:
             return None
         return owner_id.strip()
 
-    def list_recent_completed_runs(
+    def list_recent_history_runs(
         self, project_id: str, conversation_id: str, before_created_at: datetime, limit: int
     ) -> list[Run]:
-        """读取当前运行之前、同项目同对话的最近已完成轮次，按时间正序返回。(agent_run)
+        """读取当前运行之前、同项目同对话最近成功或失败的轮次，按时间正序返回。(agent_run)
 
         调用方是 ContextBuilder，用 prompt/result 组装新一轮近期历史。
         before_created_at 是当前 Run 创建时间（不含），limit 必须大于 0。
@@ -356,11 +358,11 @@ class MySQLRunRepository:
                            status, result, error, created_at, started_at, finished_at
                     FROM agent_run
                     WHERE project_id = %s AND conversation_id = %s
-                      AND status = %s AND created_at < %s
+                      AND status IN (%s, %s) AND created_at < %s
                     ORDER BY created_at DESC, run_id DESC
                     LIMIT %s
                     """,
-                    (project_id, conversation_id, RunStatus.COMPLETED.value,
+                    (project_id, conversation_id, RunStatus.COMPLETED.value, RunStatus.FAILED.value,
                      _db_datetime(before_created_at), limit),
                 )
                 rows = cursor.fetchall()
@@ -385,15 +387,18 @@ class MySQLRunRepository:
         start_created_at: datetime,
         end_created_at: datetime,
         limit: int,
+        *,
+        run_id: str | None = None,
     ) -> list[Run]:
         """读取记忆工具的候选运行；文本筛选由工具服务在边界内完成。
 
         由 search_memory 调用，只查 agent_run，不查 agent_memory。
-        范围为同项目、同对话、COMPLETED，且创建时间在 [start, end) 内，
+        范围为同项目、同对话、COMPLETED/FAILED，且创建时间在 [start, end) 内，
         同时早于 before_created_at（当前 Run 的创建时间）。时间窗口由工具层计算。
         limit 是候选数量上限，不一定等于工具最终返回数量，必须大于 0。
         先取最近的候选，再按从旧到新返回；没有结果返回 []。
         为减少读取量不取 context_json/过程消息，返回的 Run.context 固定为空。
+        run_id 非空时只查该次运行，不能绕过上述归属和时间边界。
         """
         if limit <= 0:
             raise ValueError("记忆检索数量限制必须大于 0")
@@ -406,7 +411,8 @@ class MySQLRunRepository:
                            status, result, error, created_at, started_at, finished_at
                     FROM agent_run
                     WHERE project_id = %s AND conversation_id = %s
-                      AND status = %s
+                      AND status IN (%s, %s)
+                      AND (%s IS NULL OR run_id = %s)
                       AND created_at >= %s AND created_at < %s
                       AND created_at < %s
                     ORDER BY created_at DESC, run_id DESC
@@ -416,6 +422,9 @@ class MySQLRunRepository:
                         project_id,
                         conversation_id,
                         RunStatus.COMPLETED.value,
+                        RunStatus.FAILED.value,
+                        run_id,
+                        run_id,
                         _db_datetime(start_created_at),
                         _db_datetime(end_created_at),
                         _db_datetime(before_created_at),
@@ -811,10 +820,10 @@ class SQLiteRunRepository:
         """
         return None
 
-    def list_recent_completed_runs(
+    def list_recent_history_runs(
         self, project_id: str, conversation_id: str, before_created_at: datetime, limit: int
     ) -> list[Run]:
-        """读取当前运行之前、同项目同对话的最近已完成轮次，按时间正序返回。
+        """读取当前运行之前、同项目同对话最近成功或失败的轮次，按时间正序返回。
 
         由 ContextBuilder 调用，用这些 Run 的 prompt/result 组装近期聊天历史。
         before_created_at 为当前 Run 创建时间（不含），limit 必须大于 0。
@@ -832,11 +841,11 @@ class SQLiteRunRepository:
                        status, result, error, created_at, started_at, finished_at
                 FROM agent_run
                 WHERE project_id = ? AND conversation_id = ?
-                  AND status = ? AND created_at < ?
+                  AND status IN (?, ?) AND created_at < ?
                 ORDER BY created_at DESC, run_id DESC
                 LIMIT ?
                 """,
-                (project_id, conversation_id, RunStatus.COMPLETED.value,
+                (project_id, conversation_id, RunStatus.COMPLETED.value, RunStatus.FAILED.value,
                  _to_sqlite_datetime(before_created_at), limit),
             ).fetchall()
             return [_run_from_row(row) for row in reversed(rows)]
@@ -849,15 +858,18 @@ class SQLiteRunRepository:
         start_created_at: datetime,
         end_created_at: datetime,
         limit: int,
+        *,
+        run_id: str | None = None,
     ) -> list[Run]:
         """读取记忆工具的候选运行；文本筛选由工具服务在边界内完成。
 
         由 search_memory 调用，查询 agent_run，不查询 agent_memory。
-        范围为同项目、同对话、COMPLETED，且创建时间在 [start, end) 内，
+        范围为同项目、同对话、COMPLETED/FAILED，且创建时间在 [start, end) 内，
         同时早于 before_created_at（当前 Run 创建时间）。时间窗口由工具层计算。
         limit 是候选数量上限，不一定等于工具最终返回数量，必须大于 0。
         先选最近的候选，再按从旧到新返回；无结果返回 []。
         不读取 context_json/过程消息，因此返回的 Run.context 固定为 []。
+        run_id 非空时只查该次运行，不能绕过上述归属和时间边界。
         """
         if limit <= 0:
             raise ValueError("记忆检索数量限制必须大于 0")
@@ -870,7 +882,8 @@ class SQLiteRunRepository:
                        status, result, error, created_at, started_at, finished_at
                 FROM agent_run
                 WHERE project_id = ? AND conversation_id = ?
-                  AND status = ?
+                  AND status IN (?, ?)
+                  AND (? IS NULL OR run_id = ?)
                   AND created_at >= ? AND created_at < ?
                   AND created_at < ?
                 ORDER BY created_at DESC, run_id DESC
@@ -880,6 +893,9 @@ class SQLiteRunRepository:
                     project_id,
                     conversation_id,
                     RunStatus.COMPLETED.value,
+                    RunStatus.FAILED.value,
+                    run_id,
+                    run_id,
                     _to_sqlite_datetime(start_created_at),
                     _to_sqlite_datetime(end_created_at),
                     _to_sqlite_datetime(before_created_at),

@@ -19,7 +19,7 @@ import threading
 from tools.filesystem.definitions import build_filesystem_tools
 from tools.web.definitions import build_web_tools
 from tools.memory.definitions import build_memory_tools
-from tools.terminal.definitions import build_terminal_tools
+from tools.terminal.definitions import build_terminal_tools, build_sandbox_tools
 from tools.terminal.service import TerminalAuthorizer, DEFAULT_TIMEOUT_SECONDS, DEFAULT_MAX_OUTPUT_BYTES
 from tools.registry import ToolRegistry
 from tools.exceptions import ToolError, ToolErrorCode
@@ -42,6 +42,7 @@ def create_default_registry(
     local_terminal_max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
     local_terminal_concurrency_limit: threading.Semaphore | None = None,
     local_terminal_cancel_event: threading.Event | None = None,
+    sandbox_executor=None,
     memory_repository=None,
     memory_project_id: str | None = None,
     memory_conversation_id: str | None = None,
@@ -94,7 +95,12 @@ def create_default_registry(
         http_client=web_http_client,
     ):
         registry.register(tool)
-    if local_terminal_enabled:
+    if sandbox_executor is not None:
+        if local_terminal_enabled:
+            raise ToolError(ToolErrorCode.CONFIGURATION_ERROR, "隔离执行不能与宿主终端同时开启")
+        for tool in build_sandbox_tools(sandbox_executor):
+            registry.register(tool)
+    elif local_terminal_enabled:
         if local_terminal_authorizer is None:
             raise ToolError(ToolErrorCode.CONFIGURATION_ERROR, "本地终端工具需要服务端授权回调")
         for tool in build_terminal_tools(
