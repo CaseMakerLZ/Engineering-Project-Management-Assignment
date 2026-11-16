@@ -230,7 +230,7 @@ def create_router(
         """读取任务状态与最终结果（不含上下文快照）；不存在返回 404，不重新执行。"""
 
         # 这里只读取任务状态，不会重新执行 Agent。
-        run = repository.get_run(run_id)
+        run = await run_in_threadpool(repository.get_run, run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="run not found")
         return run
@@ -277,9 +277,9 @@ def create_router(
         """读取一次运行的过程消息；任务详情只返回状态和最终结果，过程消息单独查。"""
 
         # 过程消息单独查询，任务详情只返回任务状态和最终结果。
-        if repository.get_run(run_id) is None:
+        if await run_in_threadpool(repository.get_run, run_id) is None:
             raise HTTPException(status_code=404, detail="run not found")
-        messages = repository.list_messages(run_id)
+        messages = await run_in_threadpool(repository.list_messages, run_id)
         return RunMessagesResponse(
             run_id=run_id,
             messages=[RunMessage.model_validate(message) for message in messages],

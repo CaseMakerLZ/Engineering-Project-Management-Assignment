@@ -37,7 +37,7 @@ agent-service:
     connect-timeout-ms: ${AGENT_SERVICE_SSE_CONNECT_TIMEOUT_MS:3000}
     idle-timeout-ms: ${AGENT_SERVICE_SSE_IDLE_TIMEOUT_MS:60000}
     connection-timeout-ms: ${AGENT_SERVICE_SSE_CONNECTION_TIMEOUT_MS:1800000}
-    max-connections: ${AGENT_SERVICE_SSE_MAX_CONNECTIONS:32}
+    max-connections: ${AGENT_SERVICE_SSE_MAX_CONNECTIONS:64}
     max-frame-bytes: ${AGENT_SERVICE_SSE_MAX_FRAME_BYTES:1048576}
   file-stream:
     connect-timeout-ms: ${AGENT_SERVICE_FILE_CONNECT_TIMEOUT_MS:3000}

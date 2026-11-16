@@ -210,7 +210,8 @@ class CurrentAgentRuntime:
                 image=self.settings.sandbox_image, timeout_seconds=self.settings.sandbox_timeout_seconds,
                 memory_mb=self.settings.sandbox_memory_mb, cpus=self.settings.sandbox_cpus,
                 pids=self.settings.sandbox_pids, disk_mb=self.settings.sandbox_disk_mb,
-                max_output_bytes=self.settings.sandbox_max_output_bytes))
+                max_output_bytes=self.settings.sandbox_max_output_bytes),
+                dependencies_enabled=self.settings.sandbox_dependencies_enabled)
             worker = asyncio.create_task(asyncio.to_thread(container.start))
             try:
                 await asyncio.shield(worker)

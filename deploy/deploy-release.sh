@@ -29,7 +29,8 @@ candidate_image="python-agent-sandbox:build-$release_id"
 docker build -t "$candidate_image" "$DEST/python/tools/terminal"
 docker image inspect "$candidate_image" >/dev/null
 # 两次命令共用真实容器，读写Office并验证端口/网络边界；不是只检查镜像存在。
-runuser -u agent -- env PYTHONPATH="$DEST/python" "$DEST/venv/bin/python" "$DEST/deploy/verify-sandbox.py" --image "$candidate_image"
+# 新版发布必须真实验证下载能力；失败不切换已有应用，不调用模型API。
+runuser -u agent -- env PYTHONPATH="$DEST/python" "$DEST/venv/bin/python" "$DEST/deploy/verify-sandbox.py" --image "$candidate_image" --dependencies
 old_release=""
 # -e要求目标真实存在；首次部署不存在的current不能被当作旧版本。
 if [[ -e /opt/agent/current || -L /opt/agent/current ]]; then

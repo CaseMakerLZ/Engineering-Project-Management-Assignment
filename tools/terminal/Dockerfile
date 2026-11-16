@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /root/.cache /root/.npm /var/lib/apt/lists/*
 
 COPY container_entrypoint.py /opt/agent/container_entrypoint.py
+COPY dependency_policy.py dependency_proxy.py dependency_installer.py /opt/agent/
 RUN chmod 0555 /opt/agent/container_entrypoint.py
 WORKDIR /workspace
 ENTRYPOINT ["python3", "-I", "/opt/agent/container_entrypoint.py"]

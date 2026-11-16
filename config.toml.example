@@ -35,6 +35,8 @@ allow_cloud_host_test = false
 [sandbox]
 # 只在cloud模式开启；先安装Docker并手工构建Linux镜像再改true。不改IDE。
 enabled = false
+# 仅隔离云端任务提供install_dependencies；固定仓库下载，普通命令仍断网。
+dependencies_enabled = false
 image = "python-agent-sandbox:1"
 timeout_seconds = 60
 memory_mb = 512
@@ -56,6 +58,8 @@ backend = "auto"
 path = "data/agent.sqlite3"
 
 [mysql]
+pool_wait_seconds = 2.0
+pool_max_waiters = 64
 host = "127.0.0.1"
 port = 3306
 user = "root"

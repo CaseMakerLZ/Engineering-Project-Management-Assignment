@@ -50,6 +50,12 @@ class RunService:
         configured_limit = max_concurrent_runs
         if configured_limit is None:
             configured_limit = getattr(getattr(runtime, "settings", None), "max_concurrent_runs", 4)
+        settings = getattr(runtime, 'settings', None)
+        if (settings is not None and settings.execution_mode.lower() == 'cloud'
+                and settings.sandbox_enabled):
+            # 正式链路每个Run都占隔离名额：创建前就以较小的上限拒绝，
+            # 不再先返回成功、落库后才在Runtime立刻失败。Runtime自身仍保留兜底保护。
+            configured_limit = min(configured_limit, settings.sandbox_max_concurrent)
         self._run_slots = threading.BoundedSemaphore(max(1, int(configured_limit)))
         self._run_slot_lock = threading.Lock()
         self._run_slot_holders: set[str] = set()

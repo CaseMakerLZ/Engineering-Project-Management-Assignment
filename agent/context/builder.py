@@ -35,6 +35,11 @@ Office 文件处理规则：
 
 当前环境中的可用库以终端工具返回结果为准：本地模式使用本机 Python 环境；正式云端模式使用任务容器镜像中的 Python 环境。"""
 
+DEFAULT_SYSTEM_PROMPT += """
+
+依赖安装：如果工具列表提供install_dependencies，需要额外Python/npm库时，可用合法包名和明确版本申请；不要在run_shell中用pip/npm联网下载。Python仅支持现成wheel，npm禁安装脚本，不接受Git/URL/路径依赖，有数量、体积和时长限制。成功后本任务的普通python/node命令可使用，任务结束删除。项目依赖清单不会自动更新，如需复现请另行记录所用版本。若没有该工具或安装失败，应检查原因或使用预装库，不宣称已经安装成功。
+"""
+
 
 class HistoryRepository(Protocol):
     """ContextBuilder 实际需要的最小历史查询能力。

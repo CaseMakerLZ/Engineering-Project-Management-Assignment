@@ -44,7 +44,7 @@ class SandboxLimits:
 class ContainerExecutor:
     """任务独占一个容器；多条命令共享临时依赖，结束时统一清理。"""
 
-    def __init__(self, workspace: SandboxWorkspace, limits: SandboxLimits):
+    def __init__(self, workspace: SandboxWorkspace, limits: SandboxLimits, *, dependencies_enabled=False):
         self.workspace, self.limits = workspace, limits
         self.docker = shutil.which("docker")
         self._name = None
@@ -52,6 +52,9 @@ class ContainerExecutor:
         self._dirty = False
         self._unsafe = False
         self._lock = threading.Lock()
+        self.dependencies_enabled = dependencies_enabled
+        self._dependency_packages = {}
+        self._dependency_attempts = 0
 
     @staticmethod
     def _hidden():
@@ -77,12 +80,14 @@ class ContainerExecutor:
         return [self.docker, "create", "--pull=never", "--name", name, "--log-driver=none",
             "--read-only", "--network=none", "--ipc=none", "--cap-drop=ALL",
             "--cap-add=SETUID", "--cap-add=SETGID", "--cap-add=KILL",
+            "--cap-add=CHOWN",
             "--security-opt=no-new-privileges:true", "--user=0:0",
             "--memory", f"{limits.memory_mb}m", "--memory-swap", f"{limits.memory_mb}m",
             "--cpus", str(limits.cpus), "--pids-limit", str(limits.pids),
             "--ulimit", "nofile=256:256", "--ulimit", "core=0:0",
             "--tmpfs", f"/workspace:rw,nosuid,nodev,size={limits.disk_mb}m,mode=0777",
             "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777",
+            "--tmpfs", "/deps:rw,nosuid,nodev,size=128m,mode=0755",
             self.limits.image, "serve"]
 
     def _invoke(self, action, request, *, maximum, timeout, cancellable=False):
@@ -286,3 +291,8 @@ class ContainerExecutor:
         result = self.execute(["/bin/sh", "-c", parameters.command])
         return RunShellOutput(command=command, shell="sh", **{
             key: result[key] for key in ("exit_code", "stdout", "stderr", "duration_ms")}, truncated=False)
+
+    def install_dependencies(self, ecosystem, packages):
+        """公开给工具的唯一依赖入口，网络和实际路径由服务端确定。"""
+        from .dependencies import install_dependencies
+        return install_dependencies(self, ecosystem, packages)

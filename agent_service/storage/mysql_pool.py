@@ -1,6 +1,7 @@
 """有上限的 MySQL 连接复用；一次借用只包住一次仓储操作，不包住 Agent 运行。"""
 
 import logging
+import math
 from contextlib import contextmanager
 from threading import BoundedSemaphore, Lock
 from typing import Any, Callable, Iterator
@@ -18,12 +19,22 @@ class MySQLPoolError(RuntimeError):
 class MySQLConnectionPool:
     """按需建立连接；每条连接同一时刻只交给一个调用方，满载立即失败。"""
 
-    def __init__(self, connect: Callable[[], Any], size: int = 5) -> None:
+    # 并发补丁：上面的“立即失败”是原策略；现在池满先有限等待，
+    # 超过等待人数/时间才失败。wait_seconds=0 可保留原来的不等待行为。
+    def __init__(self, connect: Callable[[], Any], size: int = 5, *,
+                 wait_seconds: float = 2.0, max_waiters: int = 64) -> None:
         """只准备内存管理对象，不连接真实数据库。"""
         if isinstance(size, bool) or not isinstance(size, int) or size < 1:
             raise ValueError("MySQL 连接池大小必须是正整数")
+        if (isinstance(wait_seconds, bool) or not isinstance(wait_seconds, (int, float))
+                or not math.isfinite(wait_seconds) or not 0 <= wait_seconds <= 10):
+            raise ValueError('MySQL 借用等待必须在0到10秒之间')
+        if isinstance(max_waiters, bool) or not isinstance(max_waiters, int) or not 1 <= max_waiters <= 128:
+            raise ValueError('MySQL 等待人数必须在1到128之间')
         self._connect = connect
         self._slots = BoundedSemaphore(size)
+        self._waiters = BoundedSemaphore(max_waiters)
+        self._wait_seconds = wait_seconds
         #Lock()是互斥锁，即进行PV操作时信号量为1（Lock()底层实现不是用信号量，但是理解代码时可以默认有一个信号量为1）
         self._lock = Lock()
         self._idle: list[Any] = []
@@ -47,8 +58,16 @@ class MySQLConnectionPool:
                   否则 → 销毁
                   释放许可（一定执行）
         """
+        # 上图 acquire 步骤已改为：先尝试立即借用；无空位时最多等待
+        # wait_seconds 秒，等待人数不得超过 max_waiters，不会无限排队。
         if not self._slots.acquire(blocking=False):
-            raise MySQLPoolError("MySQL 连接正在使用中，请稍后重试")
+            if not self._waiters.acquire(blocking=False):
+                raise MySQLPoolError('MySQL 等待请求已达上限，请稍后重试')
+            try:
+                if not self._slots.acquire(timeout=self._wait_seconds):
+                    raise MySQLPoolError("MySQL 连接正在使用中，请稍后重试")
+            finally:
+                self._waiters.release()
         connection = None
         reusable = False
         try:

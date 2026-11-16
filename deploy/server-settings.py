@@ -77,6 +77,8 @@ user = "agent_app"
 password = {quote(password)}
 database = "agent_javabackend"
 pool_size = 5
+pool_wait_seconds = 2.0
+pool_max_waiters = 64
 [storage]
 backend = "mysql"
 [runtime]
@@ -87,6 +89,7 @@ max_concurrent_runs = 2
 workspace_root = "/srv/agent/workspaces"
 [sandbox]
 enabled = true
+dependencies_enabled = true
 image = "python-agent-sandbox:1"
 timeout_seconds = 60
 memory_mb = 512
