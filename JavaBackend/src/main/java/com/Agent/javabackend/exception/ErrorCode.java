@@ -39,6 +39,7 @@ public enum ErrorCode {
     LOCAL_ACCESS_DENIED(30021,"本机请求校验失败",HttpStatus.FORBIDDEN),
     AGENT_TASK_PERSIST_FAILED(30022,"任务已创建但保存失败，请勿重复提交",HttpStatus.INTERNAL_SERVER_ERROR),
     LOCAL_PROJECT_SAVE_FAILED(30023,"项目保存失败，已创建的目录保留",HttpStatus.INTERNAL_SERVER_ERROR),
+    AGENT_RUN_CAPACITY_EXCEEDED(30024,"当前任务名额已满，请稍后重试",HttpStatus.TOO_MANY_REQUESTS),
 
     //Python Agent Service 通信域(40000-49999)
     AGENT_SERVICE_UNAVAILABLE(40001,"Agent服务暂不可用",HttpStatus.SERVICE_UNAVAILABLE),

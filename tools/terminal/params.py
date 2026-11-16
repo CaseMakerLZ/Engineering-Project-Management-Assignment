@@ -1,6 +1,7 @@
 """模型可见的终端工具参数。工作目录和限制由服务端绑定。"""
 
 from pydantic import BaseModel, Field, field_validator
+from typing import Literal
 
 
 MAX_ARGUMENTS = 64
@@ -47,3 +48,24 @@ class RunShellArgs(BaseModel):
         if not value.strip():
             raise ValueError("command 不能为空")
         return _no_nul(value)
+
+
+class DependencyPackage(BaseModel):
+    """只描述包和版本；不接受来源URL、命令或真实目录。"""
+    model_config = {"extra": "forbid"}
+    name: str = Field(min_length=1, max_length=100)
+    version: str = Field(min_length=1, max_length=50)
+
+
+class InstallDependenciesArgs(BaseModel):
+    model_config = {"extra": "forbid"}
+    ecosystem: Literal['python', 'npm']
+    packages: list[DependencyPackage] = Field(min_length=1, max_length=8)
+
+    @field_validator('packages')
+    @classmethod
+    def validate_package_strings(cls, value):
+        for item in value:
+            _no_nul(item.name)
+            _no_nul(item.version)
+        return value

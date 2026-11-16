@@ -76,6 +76,7 @@ final class PythonErrorTranslator {
             return null;
         }
         return switch (code) {
+            case "RUN_CAPACITY_EXCEEDED" -> ErrorCode.AGENT_RUN_CAPACITY_EXCEEDED;
             case "PROJECT_BUSY" -> ErrorCode.PROJECT_BUSY;
             case "PROJECT_NOT_FOUND" -> ErrorCode.PROJECT_NOT_FOUND;
             case "SUBSCRIPTION_LIMIT" -> ErrorCode.AGENT_STREAM_LIMIT;

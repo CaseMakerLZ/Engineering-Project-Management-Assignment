@@ -30,6 +30,8 @@ class Settings:
     mysql_database: str = "agent_javabackend"
     # 只限制 Python 的 MySQL 连接数，不与 Java 共用；实际使用时才建立连接。
     mysql_pool_size: int = 5
+    mysql_pool_wait_seconds: float = 2.0
+    mysql_pool_max_waiters: int = 64
     mysql_connect_timeout_seconds: int = 5
     mysql_read_timeout_seconds: int = 10
     mysql_write_timeout_seconds: int = 10
@@ -59,6 +61,7 @@ class Settings:
     terminal_allow_cloud_host_test: bool = False
     # 云端容器未通过部署机验证前保持关闭。开启后无宿主命令回退。
     sandbox_enabled: bool = False
+    sandbox_dependencies_enabled: bool = False
     sandbox_image: str = "python-agent-sandbox:1"
     sandbox_timeout_seconds: int = 60
     sandbox_memory_mb: int = 512
@@ -92,6 +95,10 @@ class Settings:
     workspace_git_max_file_bytes: int = 20_971_520
 
     def __post_init__(self) -> None:
+        from agent_service.storage.mysql_pool import MySQLConnectionPool
+        # 复用池参数校验，不建立实际连接。
+        MySQLConnectionPool(lambda: None, self.mysql_pool_size,
+            wait_seconds=self.mysql_pool_wait_seconds, max_waiters=self.mysql_pool_max_waiters)
         if (isinstance(self.max_agent_steps, bool)
                 or not isinstance(self.max_agent_steps, int) or self.max_agent_steps < 1):
             raise ValueError("max_agent_steps 必须是正整数")
@@ -113,6 +120,8 @@ class Settings:
             raise ValueError("context必须满足：摘要上限 < 整理目标 < 触发线 < 输入上限")
         if not isinstance(self.sandbox_enabled, bool):
             raise ValueError("sandbox.enabled必须是布尔值")
+        if not isinstance(self.sandbox_dependencies_enabled, bool):
+            raise ValueError('sandbox.dependencies_enabled必须是布尔值')
         if self.terminal_mode not in {"disabled", "local"}:
             raise ValueError("terminal.mode只能是disabled或local")
         if not isinstance(self.terminal_allow_cloud_host_test, bool):
@@ -183,6 +192,10 @@ class Settings:
             mysql_pool_size=_int_setting(
                 "AGENT_SERVICE_MYSQL_POOL_SIZE", mysql.get("pool_size"), environment_fallback, 5
             ),
+            mysql_pool_wait_seconds=_float_setting('AGENT_SERVICE_MYSQL_POOL_WAIT_SECONDS',
+                mysql.get('pool_wait_seconds'), environment_fallback, 2.0),
+            mysql_pool_max_waiters=_int_setting('AGENT_SERVICE_MYSQL_POOL_MAX_WAITERS',
+                mysql.get('pool_max_waiters'), environment_fallback, 64),
             mysql_connect_timeout_seconds=_int_setting(
                 "AGENT_SERVICE_MYSQL_CONNECT_TIMEOUT_SECONDS", mysql.get("connect_timeout_seconds"),
                 environment_fallback, 5,
@@ -225,6 +238,7 @@ class Settings:
             terminal_mode=terminal.get("mode", "disabled"),
             terminal_allow_cloud_host_test=terminal.get("allow_cloud_host_test", False),
             sandbox_enabled=sandbox.get("enabled", False),
+            sandbox_dependencies_enabled=sandbox.get('dependencies_enabled', False),
             sandbox_image=sandbox.get("image", "python-agent-sandbox:1"),
             sandbox_timeout_seconds=sandbox.get("timeout_seconds", 60),
             sandbox_memory_mb=sandbox.get("memory_mb", 512),

@@ -229,7 +229,8 @@ class MySQLRunRepository:
                         settings.mysql_read_timeout_seconds, settings.mysql_write_timeout_seconds):
             if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 1:
                 raise ValueError("MySQL 连接和读写超时必须是正整数秒")
-        self._pool = MySQLConnectionPool(lambda: self._connect(), settings.mysql_pool_size)
+        self._pool = MySQLConnectionPool(lambda: self._connect(), settings.mysql_pool_size,
+            wait_seconds=settings.mysql_pool_wait_seconds, max_waiters=settings.mysql_pool_max_waiters)
 
     def _connect(self):
         """仅供连接池按需新建物理连接；仓储操作必须从池中借还，不直接调用。"""

@@ -6,7 +6,7 @@ import threading
 
 from tools.registry import ToolDefinition
 
-from .params import RunCommandArgs, RunShellArgs
+from .params import RunCommandArgs, RunShellArgs, InstallDependenciesArgs
 from .service import (
     DEFAULT_MAX_OUTPUT_BYTES,
     DEFAULT_TIMEOUT_SECONDS,
@@ -53,7 +53,7 @@ def build_terminal_tools(
 
 def build_sandbox_tools(executor) -> list[ToolDefinition]:
     """模型沿用命令参数；真实副本、镜像和权限都只由服务端装配。"""
-    return [
+    tools = [
         ToolDefinition(name="run_command", args_model=RunCommandArgs,
             description="在本次任务专用的Linux环境执行程序及参数，多次调用共享临时文件和依赖。网络关闭，无宿主路径/端口；非零exit_code需检查。已提供Python数据与Office库，以及Three.js、Vite、TypeScript、esbuild；后台程序在每条命令结束时停止。",
             function=executor.run_command),
@@ -61,3 +61,8 @@ def build_sandbox_tools(executor) -> list[ToolDefinition]:
             description="在本次任务专用的Linux环境执行/bin/sh命令，可用管道/重定向。多次调用共享任务内临时依赖，但任务结束后删除且不写回node_modules或.venv。网络关闭，不能访问其他用户或服务器目录；可在同一命令内启动服务、自测并退出。",
             function=executor.run_shell),
     ]
+    if getattr(executor, 'dependencies_enabled', False):
+        tools.append(ToolDefinition(name='install_dependencies', args_model=InstallDependenciesArgs,
+            description='为本任务按需安装Python或npm依赖，仅接受包名和明确版本。Python仅现成wheel，npm禁安装脚本；来源固定为官方仓库，不接受URL/Git/本地路径。每种最多8个显式包、每任务最多4次申请，有体积/超时限制。不改项目清单，成功后python/node和构建工具可使用；失败请检查版本或使用预装库。普通命令仍断网，依赖不写回项目，任务结束删除。',
+            function=executor.install_dependencies))
+    return tools

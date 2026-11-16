@@ -1,2 +1,5 @@
 *
 !container_entrypoint.py
+!dependency_policy.py
+!dependency_proxy.py
+!dependency_installer.py
